@@ -60,27 +60,56 @@ function Header({
         isSticky={isSticky}
         {...props}
       >
-        <div className="relative h-[48px] items-center">
-          <div className="absolute left-0 top-1/2 flex -translate-y-1/2 items-center">
+        {/* Flex row, not absolute positioning.
+          *
+          * This used to place all three clusters absolutely — logo at left-0,
+          * Secondary at a hardcoded left-[250px], the toolbar centred with
+          * left-1/2 -translate-x-1/2, and the patient/settings cluster at
+          * right-0. Absolute boxes do not know about each other, so as soon as
+          * the viewer is narrower than the sum of their widths — which is
+          * exactly what happens when the reporting panel takes half the screen —
+          * they overlap and the toolbar icons appear crushed on top of the
+          * Secondary row.
+          *
+          * As a flex row the clusters push against each other honestly: the
+          * logo and the right cluster keep their size (shrink-0), and the
+          * toolbar takes the remaining space, centring while it fits and
+          * scrolling horizontally once it does not. Nothing ever overlaps.
+          */}
+        <div className="flex h-[48px] w-full items-center gap-2">
+          <div className="flex shrink-0 items-center">
             <div
               className={classNames(
-                'mr-3 inline-flex items-center',
+                // No mr-3: a white-labelled logo brings its own padding, and
+                // stacking both crowded the mark against the toolbar.
+                'inline-flex items-center',
                 isReturnEnabled && 'cursor-pointer'
               )}
               onClick={onClickReturn}
               data-cy="return-to-work-list"
             >
               {isReturnEnabled && <Icons.ArrowLeft className="text-primary ml-1 h-7 w-7" />}
-              <div className="ml-1">
+              <div className="flex items-center">
                 {WhiteLabeling?.createLogoComponentFn?.(React, props) || <Icons.OHIFLogo />}
               </div>
             </div>
           </div>
-          <div className="absolute top-1/2 left-[250px] h-8 -translate-y-1/2">{Secondary}</div>
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform">
-            <div className="flex items-center justify-center space-x-2">{children}</div>
+          <div className="flex h-8 shrink-0 items-center">{Secondary}</div>
+
+          {/* min-w-0 is what lets this shrink at all: without it a flex child
+            * refuses to go below its content width and would push the right-hand
+            * cluster off-screen instead of scrolling. */}
+          <div
+            className="flex min-w-0 flex-1 justify-center overflow-x-auto"
+            /* Hide the scrollbar without hiding the scrolling. `scrollbar-hide`
+             * is a plugin utility this build does not include, so a class name
+             * alone would silently do nothing — these are the real properties. */
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            <div className="flex items-center space-x-2 whitespace-nowrap">{children}</div>
           </div>
-          <div className="absolute right-0 top-1/2 flex -translate-y-1/2 select-none items-center">
+
+          <div className="flex shrink-0 select-none items-center">
             {UndoRedo}
             <div className="border-muted mx-1.5 h-[25px] border-r"></div>
             {PatientInfo}

@@ -36,6 +36,9 @@ import {
 import interleaveCenterLoader from './utils/interleaveCenterLoader';
 import nthLoader from './utils/nthLoader';
 import interleaveTopToBottom from './utils/interleaveTopToBottom';
+import { getGpuInfo } from './utils/getGpuTier';
+import { getRenderingProfile, resolveWebWorkerCount } from './utils/renderingProfile';
+import initWebGLContextLossRecovery from './utils/initWebGLContextLossRecovery';
 import initContextMenu from './initContextMenu';
 import initDoubleClick from './initDoubleClick';
 import initViewTiming from './utils/initViewTiming';
@@ -74,9 +77,53 @@ export default async function init({
   const statsOverlay =
     new URLSearchParams(window.location.search).get('debug') === 'true';
 
+  // ── Device-aware rendering profile ──────────────────────────────────────────
+  //
+  // Cornerstone reserves GPU memory per WebGL context (default: 7) BEFORE any
+  // voxel is uploaded. On the integrated Intel GPUs several of our radiologists
+  // read on, that pool plus a CT volume texture exceeds the GPU's budget, the
+  // browser takes the context away, and vtk.js then draws on a dead context —
+  // the black-screen MPR crash. Fewer contexts and half-precision textures are
+  // what make the same study fit on the same laptop.
+  //
+  // A machine with a real GPU keeps stock behaviour: this only spends less where
+  // there is less to spend. `?gpuTier=` overrides detection for support.
+  const gpuInfo = getGpuInfo();
+  const renderingProfile = getRenderingProfile(gpuInfo.tier);
+
+  console.info(
+    `[shealth] GPU tier: ${gpuInfo.tier} (${gpuInfo.reason}) | ` +
+      `contexts=${renderingProfile.webGLContextCount} ` +
+      `halfFloat=${renderingProfile.preferSizeOverAccuracy} ` +
+      `workers<=${renderingProfile.maxWebWorkers} cores=${gpuInfo.logicalCores}`
+  );
+
   await cs3DInit({
     peerImport: appConfig.peerImport,
     debug: { statsOverlay },
+    rendering: {
+      // NOTE the casing: cornerstone's key is `webGlContextCount`, not
+      // `webGLContextCount`. An unknown key here is silently ignored, so a typo
+      // looks exactly like "the setting does nothing" — which is how this lever
+      // was missed until now.
+      webGlContextCount:
+        appConfig.webGlContextCount ?? renderingProfile.webGLContextCount,
+      // Half-float volume textures: ~half the GPU memory, and safe on Intel
+      // integrated parts. (norm16 would save the same again but is the exact
+      // configuration known to hard-crash those drivers; cornerstone 5.x no
+      // longer exposes it at all.)
+      preferSizeOverAccuracy:
+        appConfig.preferSizeOverAccuracy ?? renderingProfile.preferSizeOverAccuracy,
+      strictZSpacingForVolumeViewport: appConfig.strictZSpacingForVolumeViewport,
+      useGenericViewport: Boolean(appConfig.useGenericViewport),
+    },
+  });
+
+  // Turn a permanent black viewport into a self-heal. Must be attached before
+  // viewports render: `webglcontextlost` has to be preventDefault()-ed or the
+  // browser never fires `webglcontextrestored` and recovery is impossible.
+  initWebGLContextLossRecovery({
+    uiNotificationService: servicesManager.services.uiNotificationService,
   });
 
   cornerstone.setUseCPURendering(Boolean(appConfig.useCPURendering));
@@ -235,14 +282,39 @@ export default async function init({
     );
   });
 
-  // These are set reasonably low to allow for interleaved retrieves and slower
-  // connections.
+  // ── Fetch concurrency ───────────────────────────────────────────────────────
+  //
+  // Frame loading here has always been ASYNCHRONOUS — this pool runs many
+  // requests at once, and MPR already loads in an interleaved order (see the
+  // `nth` strategy registered above), which is why a volume fills coarse-to-fine
+  // rather than top-to-bottom. What made loading *look* serial was that the
+  // concurrency was one fixed number tuned for the slowest clinic link, which
+  // then starves a radiologist sitting on a hospital LAN.
+  //
+  // Now it scales with the device class (a 2-core laptop cannot decode 25
+  // parallel frames anyway — it just queues them and stutters the UI), and an
+  // explicit app-config value still wins so ops can pin it per site.
   imageLoadPoolManager.maxNumRequests = {
-    [RequestTypes.Interaction]: appConfig?.maxNumRequests?.interaction || 10,
-    [RequestTypes.Thumbnail]: appConfig?.maxNumRequests?.thumbnail || 5,
-    [RequestTypes.Prefetch]: appConfig?.maxNumRequests?.prefetch || 5,
-    [RequestTypes.Compute]: appConfig?.maxNumRequests?.compute || 10,
+    [RequestTypes.Interaction]:
+      appConfig?.maxNumRequests?.interaction || renderingProfile.maxNumRequests.interaction,
+    [RequestTypes.Thumbnail]:
+      appConfig?.maxNumRequests?.thumbnail || renderingProfile.maxNumRequests.thumbnail,
+    [RequestTypes.Prefetch]:
+      appConfig?.maxNumRequests?.prefetch || renderingProfile.maxNumRequests.prefetch,
+    [RequestTypes.Compute]:
+      appConfig?.maxNumRequests?.compute || renderingProfile.maxNumRequests.compute,
   };
+
+  // Decode workers. `initWADOImageLoader` clamps to cores-1 already; this makes
+  // the ceiling device-aware instead of a single global constant, while leaving
+  // one core for the UI thread so a volume build cannot freeze the tab (which,
+  // being an iframe inside the reporting workspace, would freeze the report too).
+  if (!appConfig.maxNumberOfWebWorkers) {
+    appConfig.maxNumberOfWebWorkers = resolveWebWorkerCount(
+      renderingProfile.maxWebWorkers,
+      gpuInfo.logicalCores
+    );
+  }
 
   initWADOImageLoader(userAuthenticationService, appConfig, extensionManager);
 

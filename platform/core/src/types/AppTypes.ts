@@ -156,8 +156,26 @@ declare global {
       experimentalStudyBrowserSort?: boolean;
       defaultDataSourceName?: string;
       hotkeys?: Record<string, Hotkey> | Hotkey[];
+      /**
+       * Store volume textures at half precision (~half the GPU memory).
+       * Forwarded to cornerstone `rendering.preferSizeOverAccuracy`.
+       * Leave unset to let the GPU-tier profile decide per device.
+       */
       preferSizeOverAccuracy?: boolean;
+      /**
+       * @deprecated cornerstone 5.x removed this option. norm16 textures are the
+       * configuration known to hard-crash Intel integrated GPUs; use
+       * `preferSizeOverAccuracy` for the same memory saving safely.
+       */
       useNorm16Texture?: boolean;
+      /**
+       * WebGL contexts cornerstone's rendering pool may hold (cornerstone
+       * default: 7). Each context costs GPU memory before any image is loaded,
+       * so weak integrated GPUs need this low or MPR loses the WebGL context.
+       * Leave unset to let the GPU-tier profile decide per device.
+       * NOTE cornerstone's own key is `webGlContextCount` (lowercase L).
+       */
+      webGlContextCount?: number;
       useCPURendering?: boolean;
       strictZSpacingForVolumeViewport?: boolean;
       /**

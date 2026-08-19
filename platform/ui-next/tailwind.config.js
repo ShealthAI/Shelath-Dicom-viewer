@@ -100,19 +100,27 @@ module.exports = {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
       },
+      // Legacy OHIF colour groups. These are HARDCODED hexes that bypass the
+      // CSS variables in tailwind.css, so re-theming the variables alone left
+      // stock OHIF blue (#348CFD) leaking through wherever these are used.
+      // Re-pointed at the Shealth palette so the viewer matches the app and the
+      // super-admin exactly.
+      // Legacy OHIF colour groups: HARDCODED hexes that bypass the CSS
+      // variables, so re-theming the variables alone left stock OHIF navy and
+      // #348CFD blue showing through. Re-pointed at the Shealth light palette.
       bkg: {
-        low: '#050615',
-        med: '#090C29',
-        full: '#041C4A',
+        low: '#FFFFFF',   // white — page/panel ground
+        med: '#F8FAFC',   // app surface
+        full: '#F1F5F9',  // app surface-2
       },
       info: {
-        primary: '#FFFFFF',
-        secondary: '#7BB2CE',
+        primary: '#0F172A',   // slate-900 text on light chrome
+        secondary: '#64748B', // muted text
       },
       actions: {
-        primary: '#348CFD',
-        highlight: '#5ACCE6',
-        hover: 'rgba(52, 140, 253, 0.2)',
+        primary: '#2563EB',                  // brand primary (was #348CFD)
+        highlight: '#06B6D4',                // brand accent  (was #5ACCE6)
+        hover: 'rgba(37, 99, 235, 0.12)',
       },
     },
   },

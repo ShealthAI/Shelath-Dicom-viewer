@@ -2,6 +2,7 @@ import { Types } from '@ohif/core';
 import { cache as cs3DCache, Enums, volumeLoader } from '@cornerstonejs/core';
 
 import getCornerstoneViewportType from '../../utils/getCornerstoneViewportType';
+import { assessVolumeFeasibility } from '../../utils/assessVolumeFeasibility';
 import { StackViewportData, VolumeViewportData } from '../../types/CornerstoneCacheService';
 import { VOLUME_LOADER_SCHEME } from '../../constants';
 
@@ -318,6 +319,41 @@ class CornerstoneCacheService {
       // therefore a new volume should not be created.
       if (!isParametricMap && !isSegOrRtstruct && (!volumeImageIds || !volume)) {
         volumeImageIds = this._getCornerstoneVolumeImageIds(displaySet, dataSource);
+
+        // Refuse to build a volume this device cannot render — but NEVER by
+        // dropping slices.
+        //
+        // Two ceilings kill MPR on weak hardware: GPU memory, and the hard
+        // MAX_3D_TEXTURE_SIZE cap (commonly 2048 per axis), which a 2500-slice
+        // series exceeds outright. When either is hit, the old failure mode was
+        // a lost WebGL context and a black viewport mid-report.
+        //
+        // The tempting fix — build from every Nth slice — is not available to
+        // us: a finding smaller than the new spacing could fall entirely inside
+        // a skipped slice. A reconstruction that quietly contains less than the
+        // scanner acquired is a diagnostic hazard, not an optimisation.
+        //
+        // So we fail loudly and safely instead: no volume, a plain-language
+        // explanation, and the study still opens in 2D where every single image
+        // is present at full resolution. Nothing is lost, and nothing crashes.
+        const assessment = assessVolumeFeasibility(displaySet, volumeImageIds);
+        if (!assessment.feasible) {
+          console.warn(`[shealth] MPR unavailable: ${assessment.reason}`);
+
+          const { uiNotificationService } = this.servicesManager.services;
+          uiNotificationService?.show({
+            title: '3D reconstruction unavailable on this device',
+            message: assessment.userMessage,
+            type: 'warning',
+            duration: 15000,
+          });
+
+          const err = new Error(assessment.userMessage ?? assessment.reason);
+          err.name = 'VolumeNotFeasibleError';
+          throw err;
+        }
+
+        console.info(`[shealth] MPR volume check: ${assessment.reason}`);
 
         volume = await volumeLoader.createAndCacheVolume(volumeId, {
           imageIds: volumeImageIds,

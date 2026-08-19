@@ -24,54 +24,64 @@ module.exports = {
       initial: 'initial',
       inherit: 'inherit',
 
+      // ── Shealth brand palette ────────────────────────────────────────────
+      // This legacy @ohif/ui config is loaded as a PRESET BEFORE ui-next, and
+      // it is what actually paints the viewer chrome (header, side panels,
+      // thumbnails). Theming only ui-next's CSS variables left every one of
+      // these stock OHIF navy/teal hexes in place — which is why the UI kept
+      // looking unchanged after a rebuild.
+      //
+      // Mapped to the same colours as app.shealth.ai and the super-admin:
+      //   #2563EB primary · #0EA5E9 secondary · #06B6D4 accent
+      //   #FFFFFF / #F8FAFC / #F1F5F9 surfaces · #0F172A / #64748B text
       aqua: {
-        pale: '#7bb2ce',
+        pale: '#06B6D4',        // brand accent (was #7bb2ce)
       },
 
       primary: {
-        light: '#5acce6',
-        main: '#0944b3',
-        dark: '#090c29',
-        active: '#348cfd',
+        light: '#60A5FA',       // blue-400
+        main: '#2563EB',        // brand primary
+        dark: '#1D4ED8',        // brand primary-dark
+        active: '#2563EB',      // active tool tint (was #348cfd)
       },
       inputfield: {
-        main: '#3a3f99',
-        disabled: '#2b166b',
-        focus: '#5acce6',
-        placeholder: '#39383f',
+        main: '#E2E8F0',        // brand border
+        disabled: '#F1F5F9',
+        focus: '#2563EB',
+        placeholder: '#94A3B8',
       },
 
       secondary: {
-        light: '#3a3f99',
-        main: '#2b166b',
-        dark: '#041c4a',
-        active: '#1f1f27',
+        light: '#F1F5F9',       // surface-2
+        main: '#0EA5E9',        // brand secondary
+        dark: '#0284C7',
+        active: '#E2E8F0',
       },
 
       indigo: {
-        dark: '#0b1a42',
+        dark: '#F8FAFC',        // used as a panel ground — now app surface
       },
 
       common: {
-        bright: '#e1e1e1',
-        light: '#a19fad',
-        main: '#fff',
-        dark: '#726f7e',
-        active: '#2c3074',
+        bright: '#0F172A',      // primary text on light chrome
+        light: '#64748B',       // muted text
+        main: '#0F172A',
+        dark: '#94A3B8',
+        active: '#DBEAFE',      // blue-100 selection
       },
       bkg: {
-        low: '#050615',
-        med: '#090C29',
-        full: '#041C4A',
+        low: '#FFFFFF',         // page/panel ground
+        med: '#F8FAFC',         // app surface
+        full: '#F1F5F9',        // app surface-2
       },
       info: {
-        primary: '#FFFFFF',
-        secondary: '#7BB2CE',
+        primary: '#0F172A',
+        secondary: '#64748B',
       },
       actions: {
-        primary: '#348CFD',
-        highlight: '#5ACCE6',
-        hover: 'rgba(52, 140, 253, 0.2)',
+        primary: '#2563EB',
+        highlight: '#06B6D4',
+        hover: 'rgba(37, 99, 235, 0.12)',
       },
       customgreen: {
         100: '#05D97C',
@@ -79,20 +89,20 @@ module.exports = {
       },
 
       customblue: {
-        10: '#0A163F',
-        20: '#0B1F54',
-        30: '#09286e',
-        40: '#0E307F',
-        50: '#0F3A94',
-        80: '#1454D4',
-        100: '#c4fdff',
-        200: '#38daff',
-        300: '#1D204D',
-        400: '#90A0C1',
+        10: '#FFFFFF',   // panel ground
+        20: '#F8FAFC',   // surface
+        30: '#F1F5F9',   // surface-2
+        40: '#E2E8F0',   // border
+        50: '#CBD5E1',
+        80: '#2563EB',   // brand primary
+        100: '#EFF6FF',  // blue-50
+        200: '#06B6D4',  // brand accent
+        300: '#E2E8F0',
+        400: '#64748B',  // muted text
       },
 
       customgray: {
-        100: '#262943',
+        100: '#F1F5F9',
       },
 
       gray: {

@@ -7,30 +7,55 @@
 /* OHIF Theme */
 
 @layer base {
+  /* ── Shealth brand theme ───────────────────────────────────────────────────
+   *
+   * Same palette as the main app and super-admin, so a radiologist moving from
+   * the worklist into the viewer does not cross a visual seam:
+   *
+   *   primary    #2563EB   secondary  #0EA5E9   accent  #06B6D4
+   *   surface    #0F172A (slate-900)  muted text #64748B
+   *
+   * Values are HSL triplets because that is the contract the Tailwind config
+   * consumes (`hsl(var(--primary))`); a hex here silently produces no colour.
+   *
+   * DELIBERATELY STILL A DARK THEME. The viewport background stays black and
+   * the chrome stays dark — that is a diagnostic requirement, not a style
+   * choice: a bright UI beside a grayscale image shifts the reader's perception
+   * of contrast and causes eye strain over a reporting session. We re-tint the
+   * CHROME to our blues; we never lighten the area around the pixels.
+   *
+   * This also replaces the old approach of injecting custom-theme.css through
+   * an nginx `sub_filter` over a prebuilt image — the theme is part of the build
+   * now, so it cannot half-apply or drift from the app's palette.
+   */
   :root {
-    --highlight: 191 74% 63%;
-    --neutral: 213 22% 59%;
-    --neutral-light: 214 69% 81%;
-    --neutral-dark: 214 16% 21%;
-    --background: 0 0% 0%;
-    --foreground: 0 0% 98%;
-    --card: 234 64% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 219 90% 15%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 214 98% 60%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 214 65% 36%;
-    --secondary-foreground: 200 50% 84%;
-    --muted: 234 64% 10%;
-    --muted-foreground: 200 46% 65%;
-    --accent: 217 79% 24%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 236 52% 30%;
-    --ring: 214 98% 60%;
+    --highlight: 189 94% 43%;      /* #06B6D4 */
+    --neutral: 215 16% 47%;        /* #64748B */
+    --neutral-light: 214 32% 91%;  /* #E2E8F0 */
+    --neutral-dark: 222 47% 11%;   /* #0F172A */
+    /* Chrome matches app.shealth.ai / super-admin: white surfaces, slate text,
+     * #2563EB blue. The IMAGE AREA is unaffected — Cornerstone paints its own
+     * canvas black, so diagnostic pixels still sit on black no matter what the
+     * chrome does. */
+    --background: 0 0% 100%;           /* #FFFFFF — panels, page ground */
+    --foreground: 222 47% 11%;         /* #0F172A — primary text */
+    --card: 210 40% 98%;               /* #F8FAFC — app surface */
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;              /* #FFFFFF — header, menus */
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%;            /* #2563EB — exact app primary */
+    --primary-foreground: 0 0% 100%;   /* white ON blue */
+    --secondary: 199 89% 48%;          /* #0EA5E9 — exact app secondary */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 210 40% 96%;              /* #F1F5F9 — app surface-2 */
+    --muted-foreground: 215 16% 47%;   /* #64748B — app muted text */
+    --accent: 189 94% 43%;             /* #06B6D4 — exact app accent */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%;             /* #E2E8F0 — app border */
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;               /* focus ring = primary */
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -54,26 +79,35 @@
     --error-text: hsl(360, 100%, 45%);
   }
 
+  /* The app renders inside `.dark`, so THIS block is the one that actually
+   * paints the viewer — it re-declares every variable above and, coming later
+   * in the cascade, wins. Theming `:root` alone changes nothing visible, which
+   * is exactly the trap that made the first attempt at this look like it had
+   * failed. Both blocks are kept in sync deliberately. */
   .dark {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 234 64% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 214 98% 60%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 236 52% 30%;
-    --ring: 214 98% 60%;
+    /* Chrome matches app.shealth.ai / super-admin: white surfaces, slate text,
+     * #2563EB blue. The IMAGE AREA is unaffected — Cornerstone paints its own
+     * canvas black, so diagnostic pixels still sit on black no matter what the
+     * chrome does. */
+    --background: 0 0% 100%;           /* #FFFFFF — panels, page ground */
+    --foreground: 222 47% 11%;         /* #0F172A — primary text */
+    --card: 210 40% 98%;               /* #F8FAFC — app surface */
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;              /* #FFFFFF — header, menus */
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%;            /* #2563EB — exact app primary */
+    --primary-foreground: 0 0% 100%;   /* white ON blue */
+    --secondary: 199 89% 48%;          /* #0EA5E9 — exact app secondary */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 210 40% 96%;              /* #F1F5F9 — app surface-2 */
+    --muted-foreground: 215 16% 47%;   /* #64748B — app muted text */
+    --accent: 189 94% 43%;             /* #06B6D4 — exact app accent */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%;             /* #E2E8F0 — app border */
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;               /* focus ring = primary */
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;

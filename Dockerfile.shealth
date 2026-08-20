@@ -1,0 +1,133 @@
+# syntax=docker/dockerfile:1.7-labs
+#
+# ==============================================================================
+#  Shealth AI DICOM Viewer — production image
+# ==============================================================================
+#
+# Our build of the OHIF fork. Not interchangeable with `ohif/app`: this image is
+# the ONLY way to get the changes that make the viewer usable on the hardware our
+# radiologists actually read on, because none of them are configurable at runtime:
+#
+#   * GPU-tier rendering profile — weak integrated GPUs get 1 WebGL context and
+#     half-float volume textures instead of the stock 7 contexts at full
+#     precision, which is what made MPR lose the WebGL context and go black.
+#   * WebGL context-loss recovery — a lost context now re-renders from cache
+#     instead of leaving a dead black viewport until the radiologist reloads
+#     mid-report, with a circuit breaker so it cannot crash-loop.
+#   * Volume feasibility gate — refuses to build a volume this device cannot
+#     hold (GPU memory, or the hard MAX_3D_TEXTURE_SIZE wall) and says so in
+#     plain language, rather than crashing. It NEVER drops slices to make one fit.
+#   * Device-adaptive fetch concurrency, responsive header, Shealth branding and
+#     radiologist overlays (patient / PID / slice thickness / slice location).
+#
+# BUILD
+# ------------------------------------------------------------------------------
+#   docker build -f Dockerfile.shealth -t shealth-ohif:<n> .
+#
+# APP_CONFIG defaults to our config, so a plain build is already correct — that
+# is the point of this file existing alongside the upstream one.
+#
+# The config is BAKED IN, deliberately. Mounting app-config.js over it breaks the
+# container's start-up gzip step: the entrypoint runs `gzip app-config.js`, which
+# must UNLINK the source file — impossible for a bind-mounted file inside a
+# container (EBUSY), read-only or not. With `gzip_static always` in nginx that can
+# leave a stale or 0-byte .gz being served as the config, i.e. a blank viewer.
+#
+# PUBLISH (VPS-3 registry, then roll the swarm service on VPS-4)
+# ------------------------------------------------------------------------------
+#   docker build -f Dockerfile.shealth -t 10.0.0.3:5000/shealth-ohif:<n> .
+#   docker push 10.0.0.3:5000/shealth-ohif:<n>
+#   docker service update --image 10.0.0.3:5000/shealth-ohif:<n> \
+#     --mount-rm /usr/share/nginx/html/app-config.js ohif_app
+#
+# Tag with an incrementing number, never `latest`: the running image must be
+# identifiable when someone asks what is in production.
+# ==============================================================================
+
+
+# ── Stage 1: build the viewer ─────────────────────────────────────────────────
+FROM node:24.15.0-slim AS builder
+
+# node-gyp deps for the wasm/codec packages in the dependency tree.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g pnpm@11
+
+WORKDIR /usr/src/app
+ENV PATH=/usr/src/app/node_modules/.bin:$PATH
+
+# Manifests first so `pnpm install` is cached and only re-runs when a dependency
+# actually changes — a source-only edit then rebuilds in ~2 min instead of ~15.
+# preinstall.js is included because the root package.json's preinstall lifecycle
+# script runs during install, before the rest of the source is copied.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc preinstall.js ./
+COPY --parents ./extensions/*/package.json ./modes/*/package.json ./platform/*/package.json ./
+
+# --no-frozen-lockfile (unlike CI): .dockerignore excludes platform/docs, so the
+# lockfile's docs importer has no manifest in the build context and a frozen
+# install would fail. pnpm reconciles by dropping it.
+RUN pnpm install --no-frozen-lockfile
+
+COPY --link --exclude=pnpm-lock.yaml --exclude=package.json --exclude=Dockerfile . .
+
+ENV QUICK_BUILD=true
+
+# Our config by default — this is what makes `docker build` alone produce a
+# correct Shealth image. Overridable for a one-off diagnostic build:
+#   --build-arg APP_CONFIG=config/default.js
+ARG APP_CONFIG=config/shealth.js
+ARG PUBLIC_URL=/
+ENV PUBLIC_URL=${PUBLIC_URL}
+
+# Echoes which config is being compiled in — the first thing to check when an
+# image behaves like stock OHIF.
+RUN pnpm run show:config
+RUN pnpm run build
+
+# Pre-compress so nginx can serve .gz directly via gzip_static.
+RUN chmod u+x .docker/compressDist.sh && ./.docker/compressDist.sh
+
+
+# ── Stage 2: serve ────────────────────────────────────────────────────────────
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS final
+
+ARG PUBLIC_URL=/
+ENV PUBLIC_URL=${PUBLIC_URL}
+ARG PORT=80
+ENV PORT=${PORT}
+
+# Stamped at build time so `docker inspect` answers "what is running in prod".
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+LABEL org.opencontainers.image.title="Shealth AI DICOM Viewer" \
+      org.opencontainers.image.description="OHIF fork with GPU-tier rendering, WebGL context-loss recovery, and Shealth branding" \
+      org.opencontainers.image.vendor="Shealth AI" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}"
+
+RUN rm /etc/nginx/conf.d/default.conf
+USER nginx
+
+COPY --chown=nginx:nginx .docker/Viewer-v3.x /usr/src
+RUN chmod 777 /usr/src/entrypoint.sh
+
+COPY --from=builder /usr/src/app/platform/app/dist /usr/share/nginx/html${PUBLIC_URL}
+# Microscopy libraries resolve from the site root, so they must also live there.
+COPY --from=builder /usr/src/app/platform/app/dist/dicom-microscopy-viewer /usr/share/nginx/html/dicom-microscopy-viewer
+
+# The entrypoint may rewrite app-config.js from the APP_CONFIG env var, so the
+# tree has to be writable by the nginx user. Requires root to change ownership.
+USER root
+RUN chown -R nginx:nginx /usr/share/nginx/html && chmod -R 777 /usr/share/nginx/html
+USER nginx
+
+EXPOSE ${PORT}
+
+# Catches the failure mode that matters: nginx alive but serving a broken shell.
+# A blank viewer is otherwise indistinguishable from a healthy container.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --spider -q "http://127.0.0.1:${PORT}${PUBLIC_URL}index.html" || exit 1
+
+ENTRYPOINT ["/usr/src/entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]

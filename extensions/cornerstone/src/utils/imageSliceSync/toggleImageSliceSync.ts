@@ -1,4 +1,4 @@
-import { DisplaySetService, ViewportGridService } from '@ohif/core';
+import { getSyncableViewports } from './getSyncableViewports';
 
 const IMAGE_SLICE_SYNC_NAME = 'IMAGE_SLICE_SYNC';
 
@@ -12,8 +12,11 @@ export default function toggleImageSliceSync({
 
   syncId ||= IMAGE_SLICE_SYNC_NAME;
 
+  // Every panel with images participates. Filtering on `isReconstructable`
+  // here is what made a panel silently refuse to scroll with its neighbour —
+  // see getSyncableViewports for the full reasoning.
   const viewports =
-    providedViewports || getReconstructableStackViewports(viewportGridService, displaySetService);
+    providedViewports || getSyncableViewports(viewportGridService, displaySetService);
 
   // Todo: right now we don't have a proper way to define specific
   // viewports to add to synchronizers, and right now it is global or not
@@ -51,7 +54,10 @@ export default function toggleImageSliceSync({
 function disableSync(syncName, servicesManager: AppTypes.ServicesManager) {
   const { syncGroupService, viewportGridService, displaySetService, cornerstoneViewportService } =
     servicesManager.services;
-  const viewports = getReconstructableStackViewports(viewportGridService, displaySetService);
+  // Must use the SAME selector as enabling, or a panel that was added to the
+  // group cannot be removed from it and stays wired to a synchroniser the UI
+  // believes is off.
+  const viewports = getSyncableViewports(viewportGridService, displaySetService);
   viewports.forEach(gridViewport => {
     const { viewportId } = gridViewport.viewportOptions;
     const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
@@ -64,38 +70,4 @@ function disableSync(syncName, servicesManager: AppTypes.ServicesManager) {
       syncName
     );
   });
-}
-
-/**
- * Gets the consistent spacing stack viewport types, which are the ones which
- * can be navigated using the stack image sync right now.
- */
-function getReconstructableStackViewports(
-  viewportGridService: ViewportGridService,
-  displaySetService: DisplaySetService
-) {
-  let { viewports } = viewportGridService.getState();
-
-  viewports = [...viewports.values()];
-  // filter empty viewports
-  viewports = viewports.filter(
-    viewport => viewport.displaySetInstanceUIDs && viewport.displaySetInstanceUIDs.length
-  );
-
-  // filter reconstructable viewports
-  viewports = viewports.filter(viewport => {
-    const { displaySetInstanceUIDs } = viewport;
-
-    for (const displaySetInstanceUID of displaySetInstanceUIDs) {
-      const displaySet = displaySetService.getDisplaySetByUID(displaySetInstanceUID);
-
-      // TODO - add a better test than isReconstructable
-      if (displaySet && displaySet.isReconstructable) {
-        return true;
-      }
-
-      return false;
-    }
-  });
-  return viewports;
 }

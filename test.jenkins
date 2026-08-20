@@ -41,6 +41,16 @@
 // Tags are the build number only — never `latest`. Dockerfile.shealth is explicit
 // about this: the running image must be identifiable when someone asks what is in
 // production.
+//
+// EDITING THE sh''' BLOCKS
+// ------------------------------------------------------------------------------
+// Groovy processes backslash escapes inside ''' ''' as well as inside " ". So a
+// `\\` in the source reaches the shell as a single `\`, and `\n` reaches it as a
+// real newline. Both have already broken this file once (an `echo "... \\"` became
+// an unterminated quoted string). Rules: never write a backslash to mean a literal
+// backslash, never use `\n` in a printf/curl format — end with `; echo` instead.
+// Trailing `\` line-continuations are fine; Groovy folds them and the shell sees
+// one long command.
 // ─────────────────────────────────────────────────────────────────────────────
 
 pipeline {
@@ -108,8 +118,7 @@ pipeline {
             echo "FATAL: registry CA missing — docker falls back to plain HTTP and the push"
             echo "dies with 400 Bad Request (NOT 401). On the VPS-7 host run:"
             echo "  mkdir -p /etc/docker/certs.d/127.0.0.1:5000"
-            echo "  cp /opt/compose-files/test_vps/private-registry/certs/registry.crt \\"
-            echo "     /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
+            echo "  cp /opt/compose-files/test_vps/private-registry/certs/registry.crt /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
             echo "No daemon restart needed — certs.d is read per request."
             exit 1
           fi
@@ -290,7 +299,7 @@ pipeline {
               docker start "${CONTAINER}"
               docker network connect --alias "${ALIAS}" "${EDGE}" "${CONTAINER}"
             fi
-            curl -s -o /dev/null -w 'rollback / = %{http_code}\n' http://127.0.0.1:3001/
+            curl -s -o /dev/null -w 'rollback / = %{http_code}' http://127.0.0.1:3001/ ; echo
             docker exec "${CADDY}" wget -qO- -S "http://${ALIAS}/" 2>&1 | head -1
           '''
           notifyTeams('FAILED', "Failed @ ${env.STEP} — ohif_test rolled back")

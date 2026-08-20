@@ -50,9 +50,14 @@ export interface GpuInfo {
  * models, and treat unrecognised Intel integrated as `low` too — see below.
  */
 const WEAK_GPU_PATTERNS: RegExp[] = [
-  /intel\(r\)? (hd|uhd) graphics/i, // HD/UHD 5xx-7xx — the crash reports we have
-  /intel.*\b(hd|uhd)\b/i,
-  /microsoft basic render/i, // no GPU at all — software rasteriser
+  // Skylake-through-Comet-Lake integrated: HD 5xx/6xx and UHD 6xx. These are
+  // the parts in the crash reports. Matched on the MODEL NUMBER, not the family
+  // name, because "UHD Graphics" also covers 12th-gen-and-later Xe parts that
+  // are several times faster - lumping them together on the word "UHD" was
+  // demoting current hardware into the tier that cannot reconstruct anything.
+  /\b(hd|uhd) graphics [56]\d\d\b/i,
+  /\bhd graphics\b(?![^,]*\b[78]\d\d\b)/i,
+  /microsoft basic render/i, // no GPU at all - software rasteriser
   /llvmpipe|swiftshader|softwarerasterizer/i, // software GL
   /mesa (dri )?intel/i,
 ];
@@ -66,7 +71,17 @@ const STRONG_GPU_PATTERNS: RegExp[] = [
 ];
 
 /** Mid-range integrated that generally survives, but not with 7 contexts. */
-const MID_GPU_PATTERNS: RegExp[] = [/iris\(r\)? xe|iris plus|iris graphics/i, /vega \d+ graphics/i];
+const MID_GPU_PATTERNS: RegExp[] = [
+  /iris\(r\)? xe|iris plus|iris graphics/i,
+  /vega \d+ graphics/i,
+  // UHD 730/770 - 12th gen and later, Xe architecture.
+  /\buhd graphics [78]\d\d\b/i,
+  // "Intel(R) Graphics" with no model number is Meteor Lake / Core Ultra,
+  // which is Arc-derived and comfortably mid.
+  /intel\(r\)? graphics\b(?!.*\b(hd|uhd)\b)/i,
+  // AMD RDNA2 integrated (6000/7000-series APUs).
+  /radeon\(tm\)? graphics/i,
+];
 
 let cached: GpuInfo | null = null;
 
@@ -125,25 +140,40 @@ function classify(
     return { tier: 'low', reason: `known-weak GPU: ${renderer}` };
   }
 
-  // Low RAM or few cores cannot feed a volume build regardless of the GPU: the
-  // decode workers and the volume buffer live in system memory.
-  if ((deviceMemory !== null && deviceMemory <= 4) || cores <= 2) {
-    return {
-      tier: 'low',
-      reason: `constrained host (memory=${deviceMemory ?? '?'}GB, cores=${cores})`,
-    };
-  }
-
+  // The GPU is inspected BEFORE system RAM.
+  //
+  // navigator.deviceMemory is quantised to powers of two and capped at 8 by
+  // spec, so a 32 GB workstation reports 8 and plenty of 8 GB laptops report 4.
+  // Reading it first meant a discrete card in a box that happened to report 4
+  // was classified as weak - and a discrete GPU's VRAM has nothing to do with
+  // how much system RAM the browser was willing to admit to.
   if (STRONG_GPU_PATTERNS.some(p => p.test(renderer))) {
-    // A strong GPU on a starved host is still not a 'high' machine.
-    if (deviceMemory !== null && deviceMemory <= 8) {
+    // A discrete GPU on a genuinely starved host still is not a 'high' machine:
+    // decode workers and the staging buffer live in system memory.
+    if (deviceMemory !== null && deviceMemory <= 4) {
       return { tier: 'mid', reason: `strong GPU but only ${deviceMemory}GB RAM: ${renderer}` };
     }
     return { tier: 'high', reason: `discrete/high-end GPU: ${renderer}` };
   }
 
   if (MID_GPU_PATTERNS.some(p => p.test(renderer))) {
+    // Integrated parts share system memory, so a starved host does pull them
+    // down - but only when RAM is genuinely small, not merely under-reported.
+    if (deviceMemory !== null && deviceMemory <= 4) {
+      return {
+        tier: 'low',
+        reason: `mid GPU on a ${deviceMemory}GB host: ${renderer}`,
+      };
+    }
     return { tier: 'mid', reason: `mid integrated GPU: ${renderer}` };
+  }
+
+  // A genuinely tiny host cannot feed a volume build whatever the adapter says.
+  if (cores <= 2 || (deviceMemory !== null && deviceMemory <= 2)) {
+    return {
+      tier: 'low',
+      reason: `constrained host (memory=${deviceMemory ?? '?'}GB, cores=${cores})`,
+    };
   }
 
   // Unrecognised Intel integrated: assume it behaves like the parts that crash.

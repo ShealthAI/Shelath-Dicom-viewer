@@ -46,6 +46,8 @@
 // query the SAME backend, or the parent's pre-flight "is this study in PACS?"
 // check passes while the viewer looks somewhere else and renders nothing.
 var __SHEALTH_BACKEND__ = (function () {
+  // 1. Explicit wins. The workspace always passes the backend it is itself
+  //    using, so this is the normal path.
   try {
     var qs = new URLSearchParams(window.location.search);
     var b = qs.get('_backend');
@@ -53,7 +55,43 @@ var __SHEALTH_BACKEND__ = (function () {
       return b.replace(/\/+$/, '');
     }
   } catch (_) {}
-  return 'https://backend.shealth.ai';
+
+  // 2. No parameter - derive from THIS viewer's own origin.
+  //
+  //    There used to be a hardcoded 'https://backend.shealth.ai' here, which
+  //    meant a viewer opened without the parameter - a bookmark, a copied link,
+  //    a direct hit - silently queried PRODUCTION from whichever environment it
+  //    was actually running in. On test that reads as "study not available" or
+  //    a failed image request, because the study is not on the host being
+  //    asked. Two separate incidents traced back to it.
+  //
+  //    The DNS convention is ohif<->backend on the same domain
+  //    (ohif.shealth.ai / backend.shealth.ai, test.ohif… / test.backend…), so
+  //    swapping the label keeps the viewer talking to its own environment.
+  try {
+    var host = window.location.hostname;
+    // Rewrite the HOSTNAME, not the whole origin: in "https://ohif.shealth.ai"
+    // the label is preceded by a slash rather than a dot, so an origin-level
+    // match would silently miss production and leave the viewer querying
+    // itself.
+    if (/^ohif\./.test(host) || /\.ohif\./.test(host)) {
+      var backendHost = host.replace(/^ohif\./, 'backend.').replace(/\.ohif\./, '.backend.');
+      return (
+        window.location.protocol +
+        '//' +
+        backendHost +
+        (window.location.port ? ':' + window.location.port : '')
+      );
+    }
+    // Same-origin deployment (dev, or the viewer served behind the app's host):
+    // the API is reachable on the same origin.
+    return window.location.origin;
+  } catch (_) {}
+
+  // 3. Nothing usable. Returning empty makes the failure obvious in the
+  //    network tab as a relative request, rather than quietly succeeding
+  //    against the wrong environment.
+  return '';
 })();
 
 window.config = {

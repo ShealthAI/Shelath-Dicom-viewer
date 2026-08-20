@@ -166,12 +166,7 @@ class CornerstoneCacheService {
    *    once at ingest, so this is not a downgraded picture - it is the same
    *    reformatted view, computed somewhere that has the memory for it.
    */
-  private _notifyVolumeUnavailable(
-    displaySet,
-    assessment,
-    available,
-    sourceImageIds?: string[]
-  ): void {
+  private _notifyVolumeUnavailable(displaySet, assessment, available): void {
     const { uiNotificationService, viewportGridService } = this.servicesManager.services;
     if (!uiNotificationService) {
       return;
@@ -182,17 +177,14 @@ class CornerstoneCacheService {
     const targetUID = available?.coronalDisplaySetUID ?? available?.sagittalDisplaySetUID;
     const targetLabel = available?.coronalDisplaySetUID ? 'Open coronal' : 'Open sagittal';
 
-    // Preference order, and the reason for it:
+    // Server-built series only.
     //
-    //   1. SERVER-BUILT SERIES, when the study has them. Computed once at
-    //      ingest for every radiologist who ever opens this study, and they
-    //      arrive as ordinary DICOM at no cost to this machine.
-    //   2. BUILD IT HERE. Costs this radiologist ~380 MB of RAM and a few
-    //      seconds, every session. Offered only when the server has not already
-    //      done the work, because doing it twice helps nobody.
-    //
-    // Both produce the same planes: the client reformatter is a port of the
-    // server one, down to the rounding.
+    // A browser-side CPU reformatter was built and removed: it charged every
+    // radiologist ~380 MB and several seconds per study for work the server
+    // does once at ingest, and it was being offered on machines that should
+    // never have needed it. Reformats belong on the server; when a study has
+    // none, the honest answer is 2D at full resolution rather than a slow
+    // reconstruction on the reading machine.
     const action =
       targetUID && viewportGridService
         ? {
@@ -208,12 +200,7 @@ class CornerstoneCacheService {
               });
             },
           }
-        : sourceImageIds?.length
-          ? {
-              label: 'Build coronal here',
-              onClick: () => this._buildCpuReformat(displaySet, sourceImageIds),
-            }
-          : undefined;
+        : undefined;
 
     uiNotificationService.show({
       // Keyed by study, not by viewport or display set: the constraint is the
@@ -226,91 +213,6 @@ class CornerstoneCacheService {
       duration: 15000,
       action,
     });
-  }
-
-  /**
-   * Reslice this series in the browser and show the result in the active pane.
-   *
-   * The last resort of three, reached only when the GPU cannot hold a volume
-   * AND the server has not built the reformats. It works where the other two do
-   * not because it needs no particular hardware and nothing deployed - the
-   * pixels are already being downloaded to read the study, and an orthogonal
-   * reformat is arithmetic over them.
-   *
-   * The pane's stack is set directly rather than through a display set. A
-   * display set would additionally put COR/SAG thumbnails in the study panel,
-   * which is worth doing, but it is not what makes the images readable - and a
-   * radiologist waiting on a fallback should get pictures, not plumbing.
-   */
-  private async _buildCpuReformat(displaySet, sourceImageIds: string[]): Promise<void> {
-    const { uiNotificationService, viewportGridService, cornerstoneViewportService } =
-      this.servicesManager.services;
-
-    const viewportId = viewportGridService?.getActiveViewportId?.();
-    if (!viewportId) {
-      return;
-    }
-
-    const notifyId = `mpr-cpu-${displaySet?.displaySetInstanceUID ?? 'unknown'}`;
-    const controller = new AbortController();
-
-    uiNotificationService?.show({
-      id: notifyId,
-      title: 'Building coronal view',
-      message: `Reading ${sourceImageIds.length} images. This runs on this computer and may take a few seconds.`,
-      type: 'info',
-      duration: 60000,
-      action: { label: 'Cancel', onClick: () => controller.abort() },
-    });
-
-    try {
-      const { buildCpuReformats } = await import('../../utils/cpuReformat/buildCpuReformats');
-
-      const result = await buildCpuReformats({
-        imageIds: sourceImageIds,
-        sessionId: displaySet?.displaySetInstanceUID ?? `cpu-${Date.now()}`,
-        studyInstanceUID: displaySet?.StudyInstanceUID,
-        frameOfReferenceUID: displaySet?.FrameOfReferenceUID,
-        signal: controller.signal,
-      });
-
-      // getCornerstoneViewport is typed as the base Viewport; setStack only
-      // exists on a stack viewport. By this point the pane has already been
-      // downgraded to a stack, but check rather than assume - a volume pane
-      // here would throw inside the success path and look like the reformat
-      // itself had failed.
-      const viewport = cornerstoneViewportService?.getCornerstoneViewport(viewportId) as
-        | { setStack?: (imageIds: string[]) => Promise<unknown>; render?: () => void }
-        | undefined;
-
-      if (typeof viewport?.setStack !== 'function') {
-        await result.dispose();
-        return;
-      }
-
-      await viewport.setStack(result.imageIds.coronal);
-      viewport.render?.();
-
-      uiNotificationService?.show({
-        id: notifyId,
-        title: 'Coronal view ready',
-        message: `${result.imageIds.coronal.length} coronal planes, reconstructed on this computer. Sagittal is available from the same menu.`,
-        type: 'success',
-        duration: 6000,
-      });
-    } catch (error) {
-      const aborted = (error as Error)?.name === 'ReformatAborted';
-      uiNotificationService?.show({
-        id: notifyId,
-        title: aborted ? 'Reconstruction cancelled' : 'Could not build the coronal view',
-        // The assessment messages name the real numbers - how much memory the
-        // study needs against what this machine allows - so a radiologist can
-        // tell "this study is too big" from "my computer is misbehaving".
-        message: aborted ? 'Nothing was changed.' : ((error as Error)?.message ?? 'Unknown error'),
-        type: aborted ? 'info' : 'warning',
-        duration: 10000,
-      });
-    }
   }
 
   public async invalidateViewportData(
@@ -566,7 +468,7 @@ class CornerstoneCacheService {
         if (!assessment.feasible) {
           console.warn(`[shealth] MPR unavailable: ${assessment.reason}`);
 
-          this._notifyVolumeUnavailable(displaySet, assessment, available, volumeImageIds);
+          this._notifyVolumeUnavailable(displaySet, assessment, available);
 
           // Sentinel, not a crash. createViewportData catches this and rebuilds
           // the viewport as a 2D stack, so the radiologist gets the images

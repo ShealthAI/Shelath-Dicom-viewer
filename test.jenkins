@@ -1,0 +1,331 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// shealth-ohif (Shealth AI DICOM Viewer) — TEST CI/CD  [DOCKER-RUN, NOT SWARM]
+//
+// Repo: https://github.com/ShealthAI/Shelath-Dicom-viewer.git
+// Test box VPS-7 (vps7-test, 103.216.211.169):
+//   * Registry = LOCAL 127.0.0.1:5000 (registry:3, TLS + htpasswd, host-net).
+//   * ohif_test is a plain `docker run` CONTAINER, not a swarm service — unlike
+//     backend/frontend/superadmin. So no `docker service update`, no
+//     `docker service rollback`. Deploy = stop → rename aside → run → reconnect.
+//   * Caddy (`caddy_test`) proxies to the network ALIAS `ohif` on `edge`.
+//
+// JOB CONFIG (Jenkins on VPS-7, lo:8080):
+//   Branch:       shealth-main       ← the fork's branch. `master` is upstream OHIF.
+//   Script Path:  test.jenkins
+//
+// PREREQ (one-time):
+//   /etc/docker/certs.d/127.0.0.1:5000/ca.crt present — else the push fails with
+//     400 Bad Request (plain HTTP vs a TLS listener), NOT 401. Preflight checks it.
+//   registry-creds config file refreshed — VPS-7's htpasswd was regenerated
+//     2026-08-19 and no longer matches the value cloned from VPS-1.
+//
+// Jenkins config files: registry-creds (REG_USER/REG_PASS).  Optional cred: teams-alert.
+//
+// checkout → build → smoke-test the BAKED app-config → push to LOCAL registry →
+// swap ohif_test → alias-gate through Caddy → rollback-on-fail.
+//
+// TWO THINGS THIS FILE ENCODES THAT ARE EASY TO GET WRONG
+// ------------------------------------------------------------------------------
+// 1. The build file is `Dockerfile.shealth`, NOT `Dockerfile`. The plain
+//    `Dockerfile` in this repo is upstream OHIF's and produces a stock viewer with
+//    none of the GPU-tier rendering, WebGL context-loss recovery or branding.
+//    A build that silently uses it looks successful and ships the wrong app.
+// 2. app-config is BAKED IN by design. `app-config.js` ends up 0 bytes and the real
+//    config lives in `app-config.js.gz`, served via `gzip_static always`. Setting the
+//    APP_CONFIG env var, or bind-mounting app-config.js, makes the entrypoint
+//    `rm -f app-config.js.gz; gzip app-config.js` — replacing the baked config.
+//    Over a bind mount the gzip cannot even unlink the source (EBUSY) and can leave
+//    a 0-byte .gz being served: a blank viewer, no error, exit code 0. The served
+//    byte count is the only signal, which is what the Smoke stage checks.
+//
+// Tags are the build number only — never `latest`. Dockerfile.shealth is explicit
+// about this: the running image must be identifiable when someone asks what is in
+// production.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    timeout(time: 60, unit: 'MINUTES')     // cold pnpm install + full viewer build ≈ 15 min
+  }
+
+  parameters {
+    booleanParam(name: 'DEPLOY', defaultValue: true,
+                 description: 'Swap ohif_test after a successful push. Off = build + push only.')
+    string(name: 'MIN_CONFIG_BYTES', defaultValue: '10000',
+           description: 'Fail if the served app-config.js is smaller than this. v6 = 12547 B, v20 = 14221 B. Near-zero means the baked config was clobbered.')
+    string(name: 'APP_CONFIG', defaultValue: 'config/shealth.js',
+           description: 'Build-time config compiled into the image. Leave alone. Only change for a one-off diagnostic build (e.g. config/default.js).')
+  }
+
+  // NO pollSCM. VPS-1 and VPS-7 both run a Jenkins holding these jobs; two
+  // instances polling the same repo race each other. Enable only after VPS-1's
+  // Jenkins is retired:
+  // triggers { pollSCM('H/5 * * * *') }
+
+  environment {
+    IMAGE       = 'shealth-ohif'
+    REGISTRY    = '127.0.0.1:5000'        // LOCAL test registry (TLS + htpasswd, host-net)
+    TAG         = "${BUILD_NUMBER}"
+    DOCKERFILE  = 'Dockerfile.shealth'    // NOT Dockerfile — see header
+    CONTAINER   = 'ohif_test'
+    PREV        = 'ohif_test_prev'        // NOT ohif_test_v3125_old — that is the manual park
+    EDGE        = 'edge'                  // bridge net shared with caddy_test
+    ALIAS       = 'ohif'                  // what caddy_test dials. Dropping it = 502.
+    PUBLISH     = '127.0.0.1:3001'        // doc/ports.md
+    SMOKE_PORT  = '3009'                  // free on VPS-7 per doc/ports.md
+    SMOKE_NAME  = 'ohif_smoke'
+    CADDY       = 'caddy_test'
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        cleanWs()
+        script { env.STEP = 'Checkout' }
+        checkout scm
+        script {
+          env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+          echo "Building ${IMAGE}:${TAG} @ ${env.GIT_SHA}"
+        }
+      }
+    }
+
+    stage('Preflight') {
+      steps {
+        script { env.STEP = 'Preflight' }
+        // Fail here with the fix in hand, not 15 minutes later at the push.
+        sh '''
+          set -e
+          test -f "${DOCKERFILE}" || { echo "FATAL: ${DOCKERFILE} missing — wrong branch? (fork branch is shealth-main)"; exit 1; }
+
+          if [ ! -f "/etc/docker/certs.d/127.0.0.1:5000/ca.crt" ]; then
+            echo "FATAL: registry CA missing — docker falls back to plain HTTP and the push"
+            echo "dies with 400 Bad Request (NOT 401). On the VPS-7 host run:"
+            echo "  mkdir -p /etc/docker/certs.d/127.0.0.1:5000"
+            echo "  cp /opt/compose-files/test_vps/private-registry/certs/registry.crt \\"
+            echo "     /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
+            echo "No daemon restart needed — certs.d is read per request."
+            exit 1
+          fi
+
+          docker network inspect "${EDGE}" >/dev/null
+        '''
+      }
+    }
+
+    stage('Build image') {
+      steps {
+        script { env.STEP = 'Build image' }
+        // BuildKit is required: Dockerfile.shealth declares
+        // `# syntax=docker/dockerfile:1.7-labs` and uses COPY --parents / --exclude.
+        // Do not set DOCKER_BUILDKIT=0 anywhere in this job.
+        sh '''
+          set -e
+          DOCKER_BUILDKIT=1 docker build \
+            -f "${DOCKERFILE}" \
+            --build-arg APP_CONFIG="${APP_CONFIG}" \
+            --build-arg BUILD_VERSION="${TAG}" \
+            --build-arg BUILD_REVISION="${GIT_SHA}" \
+            -t "${IMAGE}:${TAG}" .
+
+          docker image inspect "${IMAGE}:${TAG}" \
+            --format 'built {{.Id}}  version={{index .Config.Labels "org.opencontainers.image.version"}}  rev={{index .Config.Labels "org.opencontainers.image.revision"}}'
+        '''
+      }
+    }
+
+    stage('Smoke test') {
+      // Exercise the image in isolation BEFORE it reaches the registry or replaces
+      // the live container. This is where a clobbered app-config gets caught.
+      steps {
+        script { env.STEP = 'Smoke test' }
+        sh '''
+          set -e
+          docker rm -f "${SMOKE_NAME}" 2>/dev/null || true
+          # No -e APP_CONFIG and no -v app-config mount. Both overwrite the baked config.
+          docker run -d --name "${SMOKE_NAME}" -p 127.0.0.1:${SMOKE_PORT}:80 "${IMAGE}:${TAG}"
+
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SMOKE_PORT}/" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ] || { echo "FAIL: / returned $code"; docker logs --tail 40 "${SMOKE_NAME}"; exit 1; }
+
+          # The entrypoint prints which path it took. "Not using custom APP_CONFIG"
+          # is the correct line — anything else means the baked config was replaced.
+          docker logs "${SMOKE_NAME}" 2>&1 | grep -E "APP_CONFIG|app-config" || true
+          docker logs "${SMOKE_NAME}" 2>&1 | grep -q "Not using custom APP_CONFIG" \
+            || { echo "FAIL: entrypoint rewrote app-config.js from the APP_CONFIG env var."; exit 1; }
+
+          bytes=$(curl -s "http://127.0.0.1:${SMOKE_PORT}/app-config.js" | wc -c)
+          echo "app-config.js served: ${bytes} bytes (floor ${MIN_CONFIG_BYTES})"
+          if [ "$bytes" -lt "${MIN_CONFIG_BYTES}" ]; then
+            echo "FAIL: app-config.js is ${bytes} bytes — the baked config is gone."
+            echo "Check for an app-config.js bind mount or an APP_CONFIG env var."
+            exit 1
+          fi
+
+          # gzip_static always + gunzip on: the .gz IS the config. Prove it survived.
+          docker exec "${SMOKE_NAME}" test -s /usr/share/nginx/html/app-config.js.gz \
+            || { echo "FAIL: app-config.js.gz missing or empty in the image"; exit 1; }
+
+          # The image's own HEALTHCHECK catches "nginx alive, serving a broken shell".
+          for i in $(seq 1 30); do
+            hs=$(docker inspect -f '{{.State.Health.Status}}' "${SMOKE_NAME}" 2>/dev/null || echo none)
+            [ "$hs" = "healthy" ] && break
+            [ "$hs" = "unhealthy" ] && { echo "FAIL: container went unhealthy"; docker logs --tail 40 "${SMOKE_NAME}"; exit 1; }
+            sleep 2
+          done
+          echo "smoke OK (health=${hs})"
+        '''
+      }
+      post {
+        always { sh 'docker rm -f "${SMOKE_NAME}" 2>/dev/null || true' }
+      }
+    }
+
+    stage('Push to local registry') {
+      // Push BEFORE deploy. TLS+auth registry (mirrors prod) → docker login via 'registry-creds'.
+      // Numbered tag only, no :latest — Dockerfile.shealth is explicit about this.
+      steps {
+        script { env.STEP = 'Push to registry' }
+        configFileProvider([configFile(fileId: 'registry-creds', variable: 'REG_FILE')]) {
+          sh '''
+            set +x
+            . "$REG_FILE"
+            echo "$REG_PASS" | docker login ${REGISTRY} -u "$REG_USER" --password-stdin
+            set -x
+            docker tag  "${IMAGE}:${TAG}" "${REGISTRY}/${IMAGE}:${TAG}"
+            docker push "${REGISTRY}/${IMAGE}:${TAG}"
+          '''
+        }
+      }
+    }
+
+    stage('Deploy ohif_test') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        script { env.STEP = 'Deploy' }
+        sh '''
+          set -e
+          # Snapshot the live spec first — same habit as the manual runbook.
+          docker inspect "${CONTAINER}" > "ohif_test.pre-${TAG}.json" 2>/dev/null || true
+
+          docker rm -f "${PREV}" 2>/dev/null || true
+          if docker inspect "${CONTAINER}" >/dev/null 2>&1; then
+            docker stop "${CONTAINER}"
+            docker rename "${CONTAINER}" "${PREV}"     # kept for post{failure} rollback
+          fi
+
+          docker run -d --name "${CONTAINER}" --restart unless-stopped \
+            -p ${PUBLISH}:80 "${IMAGE}:${TAG}"
+
+          # MUST carry --alias. `docker network connect` without it drops the alias,
+          # and Caddy proxies to `ohif`, not to the container name → 502.
+          docker network connect --alias "${ALIAS}" "${EDGE}" "${CONTAINER}"
+        '''
+        archiveArtifacts artifacts: "ohif_test.pre-${TAG}.json", allowEmptyArchive: true
+      }
+    }
+
+    stage('Health check') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        script { env.STEP = 'Health check' }
+        sh '''
+          set -e
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3001/" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ] || { echo "FAIL: ohif_test / returned $code"; docker logs --tail 40 "${CONTAINER}"; exit 1; }
+
+          bytes=$(curl -s "http://127.0.0.1:3001/app-config.js" | wc -c)
+          echo "deployed app-config.js: ${bytes} bytes"
+          [ "$bytes" -ge "${MIN_CONFIG_BYTES}" ] || { echo "FAIL: config ${bytes} B"; exit 1; }
+
+          # Through the alias — the exact path Caddy uses. This is the 502 gate.
+          docker exec "${CADDY}" wget -qO- -S "http://${ALIAS}/" 2>&1 | head -3
+
+          docker ps --filter "name=^/${CONTAINER}$" --format '{{.Names}}  {{.Image}}  {{.Status}}'
+        '''
+      }
+    }
+
+    stage('Prune') {
+      steps {
+        script { env.STEP = 'Prune' }
+        sh '''
+          docker rm -f "${PREV}" 2>/dev/null || true
+          docker images "${IMAGE}" --format '{{.Tag}}' \
+            | grep -E '^[0-9]+$' | sort -rn | tail -n +4 \
+            | while read t; do echo "Prune ${IMAGE}:$t"; docker rmi "${IMAGE}:$t" 2>/dev/null || true; done
+        '''
+      }
+    }
+  }
+
+  post {
+    success { script { notifyTeams('SUCCESS', 'Deployed & healthy') } }
+    failure {
+      script {
+        if (env.STEP == 'Deploy' || env.STEP == 'Health check') {
+          echo "Failure @ ${env.STEP} — restoring the previous container"
+          // No `docker service rollback` — ohif_test is a plain container.
+          sh '''
+            set +e
+            docker rm -f "${CONTAINER}"
+            if docker inspect "${PREV}" >/dev/null 2>&1; then
+              docker rename "${PREV}" "${CONTAINER}"
+              docker start "${CONTAINER}"
+              docker network connect --alias "${ALIAS}" "${EDGE}" "${CONTAINER}"
+            fi
+            curl -s -o /dev/null -w 'rollback / = %{http_code}\n' http://127.0.0.1:3001/
+            docker exec "${CADDY}" wget -qO- -S "http://${ALIAS}/" 2>&1 | head -1
+          '''
+          notifyTeams('FAILED', "Failed @ ${env.STEP} — ohif_test rolled back")
+        } else {
+          notifyTeams('FAILED', "Failed @ ${env.STEP}")
+        }
+      }
+    }
+    always {
+      sh 'docker rm -f "${SMOKE_NAME}" 2>/dev/null || true'
+      sh 'docker logout ${REGISTRY} 2>/dev/null || true'
+    }
+  }
+}
+
+def notifyTeams(String status, String detail) {
+  try {
+    withCredentials([string(credentialsId: 'teams-alert', variable: 'TEAMS_WEBHOOK')]) {
+      def color = (status == 'SUCCESS') ? '2EB67D' : 'E01E5A'
+      def payload = """{
+        "@type":"MessageCard","@context":"http://schema.org/extensions",
+        "themeColor":"${color}","summary":"shealth-ohif TEST ${status}",
+        "sections":[{
+          "activityTitle":"shealth-ohif TEST build #${env.BUILD_NUMBER} — ${status}",
+          "facts":[
+            {"name":"Status","value":"${status}"},
+            {"name":"Detail","value":"${detail}"},
+            {"name":"Commit","value":"${env.GIT_SHA ?: 'n/a'}"},
+            {"name":"Image","value":"${env.IMAGE}:${env.TAG}"}
+          ],"markdown":true}]}"""
+      writeFile file: 'teams.json', text: payload
+      sh 'curl -s -H "Content-Type: application/json" -d @teams.json "$TEAMS_WEBHOOK" || true'
+      sh 'rm -f teams.json || true'
+    }
+  } catch (e) {
+    echo "Teams notify skipped: ${e.message}"
+  }
+}

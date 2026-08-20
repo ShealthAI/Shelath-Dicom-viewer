@@ -1,6 +1,7 @@
 import { MagnifyTool, Enums as csToolsEnums } from '@cornerstonejs/tools';
 import {
   Enums as csCoreEnums,
+  StackViewport,
   eventTarget,
   getEnabledElement,
   getEnabledElements,
@@ -85,13 +86,34 @@ class HoverMagnifyTool extends MagnifyTool {
     this._openLoupe = this.preMouseDownCallback;
 
     // The framework invokes preMouseDownCallback on the active tool for every
-    // mouse-down. Left unguarded, clicking while the loupe is already following
-    // the pointer would build a SECOND magnification viewport over the first,
-    // append a second DOM node, and re-arm the drag listeners _show
-    // deliberately unbinds. Once the loupe is up a click has nothing to do, and
-    // returning false leaves the click to behave normally.
-    this.preMouseDownCallback = (evt: Parameters<typeof this._openLoupe>[0]) =>
-      this._isShowing ? false : this._openLoupe(evt);
+    // mouse-down, and whatever it throws goes straight to the error boundary.
+    //
+    // Two guards, for two different failures seen in production:
+    //
+    //   * ALREADY OPEN. Clicking while the loupe follows the pointer would
+    //     build a SECOND magnification viewport over the first, append a second
+    //     DOM node, and re-arm the drag listeners _show deliberately unbinds.
+    //
+    //   * UNSUPPORTED VIEWPORT. MagnifyTool throws on anything that is not a
+    //     stack or native planar viewport. On hover that throw is caught in
+    //     _show, so the loupe simply never appears - but a plain mouse-down on
+    //     an MPR pane came through here uncaught and put "MagnifyTool only
+    //     works on Stack or native planar viewports" on screen as a crash
+    //     dialog, over the study.
+    //
+    // Returning false in both cases leaves the click to behave normally.
+    this.preMouseDownCallback = (evt: Parameters<typeof this._openLoupe>[0]) => {
+      if (this._isShowing || !this._canMagnify(evt?.detail?.element)) {
+        return false;
+      }
+      try {
+        return this._openLoupe(evt);
+      } catch {
+        // Belt and braces: the capability check above should already have
+        // prevented this, but nothing this tool does is worth a modal.
+        return false;
+      }
+    };
   }
 
   /**
@@ -215,6 +237,13 @@ class HoverMagnifyTool extends MagnifyTool {
       return;
     }
 
+    // Skip panes the loupe cannot work on rather than attempting and catching.
+    // An MPR pane simply gets no magnifier, which is the honest outcome - and
+    // it keeps the throw out of the mouse-down path entirely.
+    if (!this._canMagnify(element)) {
+      return;
+    }
+
     if (!this._isShowing) {
       this._show(evt, element, enabledElement);
       return;
@@ -248,6 +277,28 @@ class HoverMagnifyTool extends MagnifyTool {
     });
   }
 
+  /**
+   * Whether MagnifyTool can operate on this pane.
+   *
+   * Deliberately the same test MagnifyTool makes internally before throwing.
+   * Asking first rather than catching afterwards is what keeps the error out of
+   * the framework's mouse-down path, where it becomes a crash dialog.
+   */
+  private _canMagnify(element?: HTMLElement): boolean {
+    if (!element) {
+      return false;
+    }
+    try {
+      const viewport = getEnabledElement(element as HTMLDivElement)?.viewport;
+      if (!viewport) {
+        return false;
+      }
+      return viewport instanceof StackViewport || Boolean(csCoreUtils.isGenericViewport(viewport));
+    } catch {
+      return false;
+    }
+  }
+
   private _show(evt: CustomEvent, element: HTMLElement, enabledElement): void {
     try {
       // Upstream builds the magnification viewport asynchronously and sets its
@@ -277,7 +328,7 @@ class HoverMagnifyTool extends MagnifyTool {
       // leaving the magnification viewport and its DOM node in place — which is
       // exactly the state hover mode wants, since we drive movement ourselves
       // from MOUSE_MOVE.
-      this._deactivateDraw?.(element);
+      this._deactivateDraw?.(element as HTMLDivElement);
 
       this._isShowing = true;
       this._moveTo(element, enabledElement, evt.detail.currentPoints);
@@ -389,8 +440,25 @@ class HoverMagnifyTool extends MagnifyTool {
         detail: {},
       });
     } catch {
-      /* already torn down - nothing to undo */
+      /* upstream teardown failed - the sweep below is what actually matters */
     }
+
+    // Upstream's teardown does `viewportElement.removeChild(magnifyToolElement)`
+    // with no null guard, so if the pane's `.viewport-element` has gone - a
+    // layout change, a viewport rebuild - it throws PART WAY THROUGH and leaves
+    // the loupe div in the DOM. It renders as an opaque black square sitting
+    // over the images, which is what was reported from production.
+    //
+    // So the DOM is swept unconditionally afterwards: whatever upstream managed
+    // to remove is already gone, and anything it left behind goes here.
+    this._removeOrphanedLoupes();
+  }
+
+  /** Remove any magnifier DOM left over from a failed teardown. */
+  private _removeOrphanedLoupes(): void {
+    this._forEachElement(element => {
+      element.querySelectorAll('.magnifyTool').forEach(node => node.remove());
+    });
   }
 }
 

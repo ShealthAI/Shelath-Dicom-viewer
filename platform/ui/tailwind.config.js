@@ -1,4 +1,10 @@
 module.exports = {
+  // ONE theme, permanently. Libraries in the tree (next-themes, sonner) still
+  // read prefers-color-scheme and may put a `dark` class on the document; this
+  // binds the `dark:` variant to a selector nothing ever has, so those classes
+  // compile to rules that can never match. Combined with deleting the `.dark`
+  // palette block in tailwind.css, there is no second look to drift into.
+  darkMode: ['selector', '[data-theme="never"]'],
   // Note: in Tailwind 3.0, JIT will purge unused styles by default
   // but in development, it is often useful to disable this to see
   // and try out all the styles that are available.
@@ -31,57 +37,65 @@ module.exports = {
       // these stock OHIF navy/teal hexes in place — which is why the UI kept
       // looking unchanged after a rebuild.
       //
-      // Mapped to the same colours as app.shealth.ai and the super-admin:
-      //   #2563EB primary · #0EA5E9 secondary · #06B6D4 accent
-      //   #FFFFFF / #F8FAFC / #F1F5F9 surfaces · #0F172A / #64748B text
+      // ── Shealth dark palette ─────────────────────────────────────────────
+      // Loaded as a preset BEFORE ui-next and it is what actually paints the
+      // chrome — panels, thumbnails, toolbar icons. Theming only the CSS
+      // variables leaves these hexes in charge, which is why an earlier pass
+      // appeared to change nothing.
+      //
+      //   #1E1E1E near-black   #242424/#282828 panels   #333 borders
+      //   #82BBE0 light blue = icons/active/focus (8.0:1 on chrome)
+      //   #3366AD mid blue    = filled buttons only (fails as text at 2.9:1)
+      //   #14428A deep navy   = pressed/selected tint
+      //   #F0F0F0 text        #949595 muted (5.6:1, AA)
       aqua: {
-        pale: '#06B6D4',        // brand accent (was #7bb2ce)
+        pale: '#82BBE0',        // light blue — the accent that reads on dark
       },
 
       primary: {
-        light: '#60A5FA',       // blue-400
-        main: '#2563EB',        // brand primary
-        dark: '#1D4ED8',        // brand primary-dark
-        active: '#2563EB',      // active tool tint (was #348cfd)
+        light: '#82BBE0',       // icons + active tool
+        main: '#3366AD',        // filled button surface
+        dark: '#14428A',        // pressed / deeper state
+        active: '#82BBE0',      // active tool must be legible, so the light blue
       },
       inputfield: {
-        main: '#E2E8F0',        // brand border
-        disabled: '#F1F5F9',
-        focus: '#2563EB',
-        placeholder: '#94A3B8',
+        main: '#2B2B2B',
+        disabled: '#242424',
+        focus: '#82BBE0',
+        placeholder: '#7F8080',
       },
 
       secondary: {
-        light: '#F1F5F9',       // surface-2
-        main: '#0EA5E9',        // brand secondary
-        dark: '#0284C7',
-        active: '#E2E8F0',
+        light: '#282828',
+        main: '#242424',
+        dark: '#1E1E1E',
+        active: '#14428A',      // selected row: navy tint, not a bright fill
       },
 
       indigo: {
-        dark: '#F8FAFC',        // used as a panel ground — now app surface
+        dark: '#1E1E1E',
       },
 
       common: {
-        bright: '#0F172A',      // primary text on light chrome
-        light: '#64748B',       // muted text
-        main: '#0F172A',
-        dark: '#94A3B8',
-        active: '#DBEAFE',      // blue-100 selection
+        bright: '#F0F0F0',      // primary text
+        light: '#949595',       // muted text, AA on chrome
+        main: '#F0F0F0',
+        dark: '#7F8080',
+        active: '#14428A',
       },
       bkg: {
-        low: '#FFFFFF',         // page/panel ground
-        med: '#F8FAFC',         // app surface
-        full: '#F1F5F9',        // app surface-2
+        low: '#1E1E1E',         // chrome base
+        med: '#242424',         // panels
+        full: '#282828',        // menus / raised
       },
       info: {
-        primary: '#0F172A',
-        secondary: '#64748B',
+        primary: '#F0F0F0',
+        secondary: '#949595',
       },
       actions: {
-        primary: '#2563EB',
-        highlight: '#06B6D4',
-        hover: 'rgba(37, 99, 235, 0.12)',
+        primary: '#82BBE0',     // interactive foreground
+        highlight: '#82BBE0',
+        hover: 'rgba(130, 187, 224, 0.14)',
       },
       customgreen: {
         100: '#05D97C',
@@ -89,20 +103,20 @@ module.exports = {
       },
 
       customblue: {
-        10: '#FFFFFF',   // panel ground
-        20: '#F8FAFC',   // surface
-        30: '#F1F5F9',   // surface-2
-        40: '#E2E8F0',   // border
-        50: '#CBD5E1',
-        80: '#2563EB',   // brand primary
-        100: '#EFF6FF',  // blue-50
-        200: '#06B6D4',  // brand accent
-        300: '#E2E8F0',
-        400: '#64748B',  // muted text
+        10: '#1E1E1E',   // chrome base
+        20: '#242424',   // panel
+        30: '#282828',   // raised panel
+        40: '#333333',   // border
+        50: '#3A3A3A',
+        80: '#3366AD',   // filled action
+        100: '#82BBE0',  // accent foreground
+        200: '#82BBE0',
+        300: '#333333',
+        400: '#949595',  // muted text
       },
 
       customgray: {
-        100: '#F1F5F9',
+        100: '#282828',
       },
 
       gray: {

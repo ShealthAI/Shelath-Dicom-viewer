@@ -1,11 +1,22 @@
 import * as React from 'react';
 import '../themes/themes.css';
-import { themePresets } from '../themes';
 
 const STORAGE_KEY_THEME = 'ohif:theme';
 const STORAGE_KEY_CUSTOM_CSS = 'ohif:custom-theme-css';
 const CUSTOM_STYLE_ID = 'ohif-custom-theme';
-const VALID_THEMES = new Set(['default', 'custom', ...themePresets.map(p => p.name)]);
+// ONE THEME, DELIBERATELY.
+//
+// Upstream ships six selectable presets (midnight, orchid, verdant, ...) plus a
+// `?theme=` URL switch. In a diagnostic viewer that is six extra palettes nobody
+// contrast-checked against DICOM greys — orchid is purple — and any of them
+// overrides the values chosen for reading. A radiologist could land on one from
+// a stale localStorage entry or a shared link and be reading on a palette we
+// never validated.
+//
+// So the allowlist is 'default' only: presets no longer resolve, `?theme=` has
+// nothing valid to select, and a previously-stored preset falls back to default
+// on the next load. `custom` stays excluded for the same reason — see below.
+const VALID_THEMES = new Set(['default']);
 
 type ActiveThemeContextType = {
   activeTheme: string;

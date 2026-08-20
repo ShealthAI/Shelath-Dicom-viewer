@@ -29,33 +29,71 @@
    * now, so it cannot half-apply or drift from the app's palette.
    */
   :root {
-    --highlight: 189 94% 43%;      /* #06B6D4 */
-    --neutral: 215 16% 47%;        /* #64748B */
-    --neutral-light: 214 32% 91%;  /* #E2E8F0 */
-    --neutral-dark: 222 47% 11%;   /* #0F172A */
-    /* Chrome matches app.shealth.ai / super-admin: white surfaces, slate text,
-     * #2563EB blue. The IMAGE AREA is unaffected — Cornerstone paints its own
-     * canvas black, so diagnostic pixels still sit on black no matter what the
-     * chrome does. */
-    --background: 0 0% 100%;           /* #FFFFFF — panels, page ground */
-    --foreground: 222 47% 11%;         /* #0F172A — primary text */
-    --card: 210 40% 98%;               /* #F8FAFC — app surface */
-    --card-foreground: 222 47% 11%;
-    --popover: 0 0% 100%;              /* #FFFFFF — header, menus */
-    --popover-foreground: 222 47% 11%;
-    --primary: 221 83% 53%;            /* #2563EB — exact app primary */
-    --primary-foreground: 0 0% 100%;   /* white ON blue */
-    --secondary: 199 89% 48%;          /* #0EA5E9 — exact app secondary */
-    --secondary-foreground: 0 0% 100%;
-    --muted: 210 40% 96%;              /* #F1F5F9 — app surface-2 */
-    --muted-foreground: 215 16% 47%;   /* #64748B — app muted text */
-    --accent: 189 94% 43%;             /* #06B6D4 — exact app accent */
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 91%;             /* #E2E8F0 — app border */
-    --input: 214 32% 91%;
-    --ring: 221 83% 53%;               /* focus ring = primary */
+    --highlight: 204 60% 69%;      /* #82BBE0 palette light blue */
+    --neutral: 0 0% 58%;           /* #949595 muted text, AA on chrome */
+    --neutral-light: 0 0% 94%;     /* #F0F0F0 palette off-white */
+    --neutral-dark: 217 75% 31%;   /* #14428A palette deep navy */
+    /* ── Shealth dark palette ────────────────────────────────────────────────
+     *
+     * Built for reading, not for looking at. In a reporting session the eye
+     * adapts to whatever fills the screen, so a bright interface next to a
+     * grayscale image measurably shifts how contrast is perceived and tires the
+     * reader. Radiologists ask for dark viewers for that reason, and every
+     * choice below follows from it:
+     *
+     *   1. LOW-LUMINANCE, DESATURATED SURFACES. Chrome is near-black
+     *      (#1E1E1E) with panels lifted only slightly (#242424/#282828). Large
+     *      areas carry no colour at all — a blue wash across a panel would bias
+     *      the perception of the greys next to it.
+     *
+     *   2. COLOUR ONLY ON SMALL, INTERACTIVE THINGS. The blues appear on icons,
+     *      active tools, focus rings and buttons — never as a background field.
+     *      That is what "a slight use of blue" has to mean in a diagnostic UI.
+     *
+     *   3. THE BLUE THAT CARRIES MEANING IS THE LIGHT ONE. Measured against
+     *      #1E1E1E: light blue #82BBE0 is 8.0:1 (safe for icons and text), but
+     *      mid blue #3366AD is only 2.9:1 and FAILS as text or an icon on dark.
+     *      So #3366AD is used exclusively as a filled surface with off-white on
+     *      it (5.1:1), and #82BBE0 does all the foreground work.
+     *
+     *   4. TEXT MEETS WCAG AA. Off-white #F0F0F0 on #1E1E1E is 14.6:1. The
+     *      palette grey #7F8080 is 4.21:1 — just under the 4.5:1 body-text
+     *      floor — so muted text uses #949595 (5.6:1), the nearest neutral that
+     *      passes while still reading as the same grey.
+     *
+     *   5. THE VIEWPORT ITSELF STAYS PURE BLACK. Never tinted, never lifted.
+     *      Cornerstone paints that canvas; nothing here should compete with it.
+     */
+    --background: 0 0% 0%;          /* viewport ground — pure black, untouchable */
+    --foreground: 0 0% 94%;         /* #F0F0F0 palette off-white, 14.6:1 */
+
+    --card: 0 0% 14%;               /* #242424 panels, one step above the chrome */
+    --card-foreground: 0 0% 94%;
+    --popover: 0 0% 16%;            /* #282828 menus float above panels */
+    --popover-foreground: 0 0% 94%;
+
+    /* Filled actions only — off-white on this is 5.1:1. Never used for text. */
+    --primary: 215 54% 44%;         /* #3366AD palette mid blue */
+    --primary-foreground: 0 0% 94%;
+
+    /* The workhorse accent: icons, active tool, focus ring. 8.0:1 on chrome. */
+    --secondary: 204 60% 69%;       /* #82BBE0 palette light blue */
+    --secondary-foreground: 0 0% 12%;
+
+    --muted: 0 0% 16%;              /* #282828 inert surfaces */
+    --muted-foreground: 0 0% 58%;   /* #949595 — 5.6:1, AA for body text */
+
+    --accent: 204 60% 69%;          /* #82BBE0 — highlights match the accent */
+    --accent-foreground: 0 0% 12%;
+
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 94%;
+
+    /* Borders are separators, not decoration: just enough to read as an edge. */
+    --border: 0 0% 20%;             /* #333333 */
+    --input: 0 0% 24%;
+    --ring: 204 60% 69%;            /* focus ring = light blue, visible on dark */
+
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -79,41 +117,19 @@
     --error-text: hsl(360, 100%, 45%);
   }
 
-  /* The app renders inside `.dark`, so THIS block is the one that actually
-   * paints the viewer — it re-declares every variable above and, coming later
-   * in the cascade, wins. Theming `:root` alone changes nothing visible, which
-   * is exactly the trap that made the first attempt at this look like it had
-   * failed. Both blocks are kept in sync deliberately. */
-  .dark {
-    /* Chrome matches app.shealth.ai / super-admin: white surfaces, slate text,
-     * #2563EB blue. The IMAGE AREA is unaffected — Cornerstone paints its own
-     * canvas black, so diagnostic pixels still sit on black no matter what the
-     * chrome does. */
-    --background: 0 0% 100%;           /* #FFFFFF — panels, page ground */
-    --foreground: 222 47% 11%;         /* #0F172A — primary text */
-    --card: 210 40% 98%;               /* #F8FAFC — app surface */
-    --card-foreground: 222 47% 11%;
-    --popover: 0 0% 100%;              /* #FFFFFF — header, menus */
-    --popover-foreground: 222 47% 11%;
-    --primary: 221 83% 53%;            /* #2563EB — exact app primary */
-    --primary-foreground: 0 0% 100%;   /* white ON blue */
-    --secondary: 199 89% 48%;          /* #0EA5E9 — exact app secondary */
-    --secondary-foreground: 0 0% 100%;
-    --muted: 210 40% 96%;              /* #F1F5F9 — app surface-2 */
-    --muted-foreground: 215 16% 47%;   /* #64748B — app muted text */
-    --accent: 189 94% 43%;             /* #06B6D4 — exact app accent */
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 91%;             /* #E2E8F0 — app border */
-    --input: 214 32% 91%;
-    --ring: 221 83% 53%;               /* focus ring = primary */
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 30 80% 55%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
-  }
+  /* NO DARK THEME.
+   *
+   * This viewer has ONE palette. The `.dark` block that used to live here was
+   * deleted rather than recoloured, because two palettes that must be kept
+   * identical will not stay identical: the next person edits `:root` — the
+   * obvious place — and users whose OS is set to dark silently get a different
+   * UI from everyone else. That already cost us one wrong-looking build.
+   *
+   * Libraries in the tree (next-themes, sonner) still read
+   * `prefers-color-scheme` and may add a `dark` class to the document. With no
+   * `.dark` rules and no `dark:` variants compiled (see darkMode in
+   * tailwind.config.js), that class now selects nothing and changes nothing.
+   */
 }
 
 /* ORIGINAL THEME for comparison and testing

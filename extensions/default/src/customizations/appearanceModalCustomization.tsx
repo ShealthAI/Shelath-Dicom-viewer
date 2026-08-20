@@ -8,13 +8,16 @@ import {
   SelectItem,
   Button,
   useActiveTheme,
-  themePresets,
 } from '@ohif/ui-next';
 import { useTranslation } from 'react-i18next';
 
 function AppearanceModalDefault() {
-  const { activeTheme, setActiveTheme, customCss, applyCustomTheme, clearCustomTheme } =
-    useActiveTheme();
+  // Theme PRESETS are intentionally not offered: this viewer ships one palette,
+  // contrast-checked against DICOM greys (see tailwind.css). The upstream picker
+  // let a radiologist switch to e.g. the purple 'orchid' preset mid-report, on a
+  // palette nobody validated for reading grayscale. `setActiveTheme` is no longer
+  // consumed here for that reason; custom CSS remains for support/debug use.
+  const { activeTheme, customCss, applyCustomTheme, clearCustomTheme } = useActiveTheme();
   const { t } = useTranslation('AppearanceModal');
 
   const [draftCss, setDraftCss] = React.useState(() => customCss);
@@ -46,7 +49,6 @@ function AppearanceModalDefault() {
       }
     } else {
       setIsCustomOpen(false);
-      setActiveTheme(value);
     }
   };
 
@@ -72,15 +74,9 @@ function AppearanceModalDefault() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                {/* Presets removed on purpose — one validated palette only.
+                    See the note where useActiveTheme is destructured. */}
                 <SelectItem value="default">{t('Default Theme')}</SelectItem>
-                {themePresets.map(preset => (
-                  <SelectItem
-                    key={preset.name}
-                    value={preset.name}
-                  >
-                    {preset.label}
-                  </SelectItem>
-                ))}
                 {(customCss || draftCss) && <SelectItem value="custom">{t('Custom')}</SelectItem>}
               </SelectContent>
             </Select>

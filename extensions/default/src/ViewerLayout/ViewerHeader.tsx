@@ -138,8 +138,15 @@ function ViewerHeader({ appConfig }: withAppTypes<{ appConfig: AppTypes.Config }
         </div>
       }
     >
-      <div className="relative flex justify-center gap-[4px]">
-        <Toolbar buttonSection="primary" />
+      {/* The toolbar owns its own row so it can measure the width it actually
+        * has. `collapsible` moves whatever does not fit into an overflow menu
+        * instead of letting the row clip silently - which is what used to hide
+        * tools with no indication whenever a side panel opened. */}
+      <div className="relative flex min-w-0 flex-1 justify-center">
+        <Toolbar
+          buttonSection="primary"
+          collapsible
+        />
       </div>
     </Header>
   );

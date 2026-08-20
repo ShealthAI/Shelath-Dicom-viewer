@@ -98,15 +98,17 @@ function Header({
 
           {/* min-w-0 is what lets this shrink at all: without it a flex child
             * refuses to go below its content width and would push the right-hand
-            * cluster off-screen instead of scrolling. */}
-          <div
-            className="flex min-w-0 flex-1 justify-center overflow-x-auto"
-            /* Hide the scrollbar without hiding the scrolling. `scrollbar-hide`
-             * is a plugin utility this build does not include, so a class name
-             * alone would silently do nothing — these are the real properties. */
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          >
-            <div className="flex items-center space-x-2 whitespace-nowrap">{children}</div>
+            * cluster off-screen.
+            *
+            * This used to be a horizontal scroll container with the scrollbar
+            * hidden, which meant tools silently disappeared whenever the row ran
+            * out of room — no scrollbar, no chevron, nothing to say they were
+            * still there. Overflow is now the toolbar's own job: it measures
+            * this slot and moves what does not fit into a menu. All this has to
+            * do is hand it a definite width to measure, hence flex-1 here and
+            * w-full on the child rather than a content-sized wrapper. */}
+          <div className="flex min-w-0 flex-1 justify-center">
+            <div className="flex w-full items-center justify-center">{children}</div>
           </div>
 
           <div className="flex shrink-0 select-none items-center">

@@ -233,52 +233,87 @@ window.config = {
     ],
   },
 
-  // ── White-label ─────────────────────────────────────────────────────────────
+  // ── White-label ────────────────────────────────────────────────────────
   //
-  // The real Shealth AI mark, the same asset the main app serves at /logos.png.
-  // Copied into this build (platform/app/public/logos.png) rather than linked
-  // across origins: the viewer runs on its own host, so a cross-origin <img> to
-  // the app would break whenever the two are on different domains — which is
-  // exactly the normal deployment.
+  // A wordmark, not the Shealth AI logo. The logo names the COMPANY; this
+  // header names the PRODUCT, and they are not the same thing - the viewer is
+  // our own customised build, so it carries its own name.
   //
-  // Height-constrained with width:auto so the 722x345 source keeps its aspect
-  // ratio inside the 48px header. NOT inverted: the FE sidebar applies
-  // `brightness-0 invert` to force the mark white on its dark sidebar, but this
-  // header is white, so the logo is used in its own colours.
+  // Rendered as text rather than an image on purpose: it stays sharp at every
+  // zoom and pixel density, needs no asset shipped with the build, and takes
+  // its colours from the palette instead of having them baked into a PNG.
+  //
+  // RESPONSIVE, because the header is a fixed-height strip shared with the
+  // toolbar. At its full width this wordmark is roughly 190px against the old
+  // logo's 55px, and it does not shrink, so every pixel it takes is a pixel the
+  // toolbar loses - which on a narrow window is the difference between a tool
+  // being on the toolbar and being buried in the overflow menu. Below 1100px it
+  // drops to "Shealth" and hands about 135px back.
+  //
+  // Done with a media query rather than a resize listener: the browser already
+  // tracks viewport width, and no React state means no re-render of the header
+  // while the radiologist drags a panel divider.
   whiteLabeling: {
     createLogoComponentFn: function (React) {
+      var WORDMARK_STYLE_ID = 'shealth-wordmark-style';
+      var css =
+        '@media (max-width: 1100px) { .shealth-wordmark__product { display: none; } }';
+
       return React.createElement(
         'a',
         {
           href: '/',
           style: {
             display: 'flex',
-            alignItems: 'center',
+            alignItems: 'baseline',
+            gap: '5px',
             textDecoration: 'none',
-            // Breathing room on both sides so the mark never touches the header
-            // edge or crowds the toolbar sitting next to it.
-            padding: '0 14px 0 10px',
+            // Breathing room on both sides so the wordmark never touches the
+            // header edge or crowds the toolbar next to it.
+            padding: '0 14px 0 12px',
             height: '100%',
+            alignSelf: 'center',
+            // A wrapped product name would push the fixed-height header strip
+            // out of alignment on a narrow window.
+            whiteSpace: 'nowrap',
           },
-          'aria-label': 'Shealth AI',
+          'aria-label': 'Shealth Smart Care Viewer',
         },
-        React.createElement('img', {
-          src: './logos.png',
-          alt: 'Shealth AI',
-          style: {
-            // 26px inside the 48px bar leaves ~11px above and below. Sizing by
-            // height only (width:auto) preserves the 722x345 aspect ratio.
-            height: '26px',
-            width: 'auto',
-            objectFit: 'contain',
-            display: 'block',
-            // The mark is dark-on-transparent, which disappears against the
-            // near-black chrome. Knock it to pure white the same way the main
-            // app's sidebar does (`brightness-0 invert`) so one asset serves
-            // both light and dark surroundings.
-            filter: 'brightness(0) invert(1)',
+        // Scoped stylesheet, keyed by id so React reuses this one node instead
+        // of appending another copy on every render.
+        React.createElement('style', { key: WORDMARK_STYLE_ID }, css),
+        React.createElement(
+          'span',
+          {
+            style: {
+              // Near-white rather than pure white: #F0F0F0 is the palette's
+              // foreground and is easier to read for hours against near-black.
+              color: '#F0F0F0',
+              fontSize: '15px',
+              fontWeight: 700,
+              letterSpacing: '0.2px',
+              lineHeight: 1,
+            },
           },
-        })
+          'Shealth'
+        ),
+        React.createElement(
+          'span',
+          {
+            className: 'shealth-wordmark__product',
+            style: {
+              // Palette secondary. Passes AA on the header background, unlike
+              // the primary #3366AD, which is a fill colour and measures 2.9:1
+              // as text - too low to set a product name in.
+              color: '#82BBE0',
+              fontSize: '15px',
+              fontWeight: 400,
+              letterSpacing: '0.2px',
+              lineHeight: 1,
+            },
+          },
+          'Smart Care Viewer'
+        )
       );
     },
   },

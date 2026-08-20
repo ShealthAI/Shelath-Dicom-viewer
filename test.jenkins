@@ -13,19 +13,19 @@
 //   Branch:       shealth-main       ← the fork's branch. `master` is upstream OHIF.
 //   Script Path:  test.jenkins
 //
-// PREREQ (one-time):
+// PREREQ (one-time, both on the VPS-7 HOST — not in the Jenkins container):
 //   /etc/docker/certs.d/127.0.0.1:5000/ca.crt present — else the push fails with
-//     400 Bad Request (plain HTTP vs a TLS listener), NOT 401. Preflight now
-//     INSTALLS it from /opt/compose-files/.../registry.crt when it can, and only
-//     fails when it cannot.
-//     Caveat worth knowing: a push is done by the docker DAEMON, so the cert has
-//     to exist on the DAEMON's host. If this Jenkins is itself a container with
-//     docker.sock mounted, the /etc/docker it sees is its own — the check can
-//     then pass or fail for the wrong filesystem, and the real fix is on the host.
+//     400 Bad Request (plain HTTP vs a TLS listener), NOT 401.
 //   registry-creds config file refreshed — VPS-7's htpasswd was regenerated
-//     2026-08-19 and no longer matches the value cloned from VPS-1. Preflight now
-//     does a `docker login` up front so this fails in seconds, not after a
-//     15-minute build.
+//     2026-08-19 and no longer matches the value cloned from VPS-1.
+//
+//   Preflight verifies BOTH with a single `docker login`, in ~3 s, instead of
+//   testing for files. It does not try to install the cert: a push is performed
+//   by the docker DAEMON, so the cert must exist on the DAEMON's host, and this
+//   pipeline runs inside a container with only docker.sock. Any file test or `cp`
+//   from here touches the container's filesystem, which the daemon never reads —
+//   it fails on a correctly configured host and "succeeds" without fixing
+//   anything on a broken one. The login is the only honest check.
 //
 // Jenkins config files: registry-creds (REG_USER/REG_PASS).  Optional cred: teams-alert.
 //
@@ -122,44 +122,13 @@ pipeline {
           set -e
           test -f "${DOCKERFILE}" || { echo "FATAL: ${DOCKERFILE} missing — wrong branch? (fork branch is shealth-main)"; exit 1; }
 
-          # ── Registry CA, checked and installed ON THE DAEMON'S HOST ──────────
-          #
-          # A push is performed by the docker DAEMON, so the CA has to exist on the
-          # daemon's filesystem. This Jenkins is a container with docker.sock
-          # mounted, so its own /etc/docker is NOT the daemon's — an earlier version
-          # of this check tested the agent's filesystem and hard-failed a build that
-          # it had no way to fix, and no way to correctly diagnose.
-          #
-          # The helper container below is bind-mounted from the HOST: volume paths in
-          # `docker run` are resolved by the daemon, so /etc/docker and
-          # /opt/compose-files here are the host's, not this agent's. That makes the
-          # check authoritative and the fix possible from inside CI.
-          #
-          # This is not a new privilege. Mounting docker.sock is already
-          # root-equivalent on the host; this only uses it deliberately.
-          set +e
-          docker run --rm             -v /etc/docker:/host-etc-docker             -v /opt/compose-files:/host-compose:ro             alpine:3 sh -c '
-              set -e
-              CD="/host-etc-docker/certs.d/127.0.0.1:5000"
-              SRC="/host-compose/test_vps/private-registry/certs/registry.crt"
-              if [ -s "$CD/ca.crt" ]; then echo "host registry CA present"; exit 0; fi
-              if [ ! -f "$SRC" ]; then echo "MISSING-SOURCE"; exit 2; fi
-              mkdir -p "$CD"
-              cp "$SRC" "$CD/ca.crt"
-              echo "installed host registry CA from $SRC"
-            '
-          ca_rc=$?
-          set -e
-
-          if [ "$ca_rc" = "2" ]; then
-            echo "FATAL: the registry certificate is not on the VPS-7 host either."
-            echo "Expected at: /opt/compose-files/test_vps/private-registry/certs/registry.crt"
-            echo "Re-issue it, or copy it from the registry container, then re-run."
-            exit 1
-          elif [ "$ca_rc" != "0" ]; then
-            echo "WARNING: could not verify the host registry CA (exit ${ca_rc})."
-            echo "Continuing — the docker login below is the authoritative check."
-          fi
+          # NO CA FILE CHECK HERE. /etc/docker/certs.d is read by the docker DAEMON,
+          # on the host. This step runs inside the Jenkins container, which has neither
+          # /etc/docker nor /opt/compose-files — so a file test reports the wrong
+          # filesystem and FATALs on a correctly configured host, and a "self-heal" cp
+          # writes a cert into the container that the daemon will never read.
+          # The login probe below is the only check that cannot be fooled by the
+          # container boundary: it makes the daemon talk to the registry for real.
 
           docker network inspect "${EDGE}" >/dev/null
         '''
@@ -172,13 +141,31 @@ pipeline {
           sh '''
             set +x
             . "$REG_FILE"
-            if ! echo "$REG_PASS" | docker login ${REGISTRY} -u "$REG_USER" --password-stdin >/dev/null 2>&1; then
-              echo "FATAL: docker login to ${REGISTRY} failed."
-              echo "401 => the registry-creds config file is stale; refresh it from VPS-7's htpasswd."
-              echo "400 => TLS/plain-HTTP mismatch, i.e. the CA above is not trusted by the daemon."
+            if out=$(echo "$REG_PASS" | docker login ${REGISTRY} -u "$REG_USER" --password-stdin 2>&1); then
+              echo "registry login OK"
+            else
+              echo "$out"
+              case "$out" in
+                *400*)
+                  echo "FATAL: 400 = plain HTTP sent to a TLS listener. The DAEMON does not"
+                  echo "trust the registry CA. On the VPS-7 HOST, as root:"
+                  echo "  mkdir -p /etc/docker/certs.d/127.0.0.1:5000"
+                  echo "  cp /opt/compose-files/test_vps/private-registry/certs/registry.crt /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
+                  echo "No daemon restart needed — certs.d is read per request."
+                  ;;
+                *401*|*authentication*|*unauthorized*)
+                  echo "FATAL: 401 = CA trust is fine, the credentials are wrong."
+                  echo "VPS-7's htpasswd was regenerated 2026-08-19 and no longer matches the"
+                  echo "value cloned from VPS-1. Update the registry-creds managed file:"
+                  echo "  Jenkins -> Manage Jenkins -> Managed files -> registry-creds"
+                  ;;
+                *)
+                  echo "FATAL: registry not reachable at ${REGISTRY}."
+                  echo "On the host: docker ps --filter name=registry"
+                  ;;
+              esac
               exit 1
             fi
-            echo "registry login OK"
           '''
         }
       }

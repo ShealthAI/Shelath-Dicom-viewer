@@ -15,9 +15,17 @@
 //
 // PREREQ (one-time):
 //   /etc/docker/certs.d/127.0.0.1:5000/ca.crt present — else the push fails with
-//     400 Bad Request (plain HTTP vs a TLS listener), NOT 401. Preflight checks it.
+//     400 Bad Request (plain HTTP vs a TLS listener), NOT 401. Preflight now
+//     INSTALLS it from /opt/compose-files/.../registry.crt when it can, and only
+//     fails when it cannot.
+//     Caveat worth knowing: a push is done by the docker DAEMON, so the cert has
+//     to exist on the DAEMON's host. If this Jenkins is itself a container with
+//     docker.sock mounted, the /etc/docker it sees is its own — the check can
+//     then pass or fail for the wrong filesystem, and the real fix is on the host.
 //   registry-creds config file refreshed — VPS-7's htpasswd was regenerated
-//     2026-08-19 and no longer matches the value cloned from VPS-1.
+//     2026-08-19 and no longer matches the value cloned from VPS-1. Preflight now
+//     does a `docker login` up front so this fails in seconds, not after a
+//     15-minute build.
 //
 // Jenkins config files: registry-creds (REG_USER/REG_PASS).  Optional cred: teams-alert.
 //
@@ -114,17 +122,55 @@ pipeline {
           set -e
           test -f "${DOCKERFILE}" || { echo "FATAL: ${DOCKERFILE} missing — wrong branch? (fork branch is shealth-main)"; exit 1; }
 
-          if [ ! -f "/etc/docker/certs.d/127.0.0.1:5000/ca.crt" ]; then
-            echo "FATAL: registry CA missing — docker falls back to plain HTTP and the push"
-            echo "dies with 400 Bad Request (NOT 401). On the VPS-7 host run:"
-            echo "  mkdir -p /etc/docker/certs.d/127.0.0.1:5000"
-            echo "  cp /opt/compose-files/test_vps/private-registry/certs/registry.crt /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
-            echo "No daemon restart needed — certs.d is read per request."
-            exit 1
+          CA_DIR="/etc/docker/certs.d/127.0.0.1:5000"
+          CA_SRC="/opt/compose-files/test_vps/private-registry/certs/registry.crt"
+
+          if [ ! -f "${CA_DIR}/ca.crt" ]; then
+            echo "registry CA not present at ${CA_DIR}/ca.crt — attempting to install it"
+
+            # Self-heal when the source cert is reachable and we can write. The
+            # remedy is fully determined, so making a human run two fixed commands
+            # only converts a 20-second fix into a failed build plus a handover.
+            if [ -f "${CA_SRC}" ] && mkdir -p "${CA_DIR}" 2>/dev/null && cp "${CA_SRC}" "${CA_DIR}/ca.crt" 2>/dev/null; then
+              echo "installed ${CA_DIR}/ca.crt from ${CA_SRC} (certs.d is read per request — no daemon restart)"
+            else
+              echo "FATAL: registry CA missing and could not be installed automatically."
+              echo ""
+              echo "WHICH FILESYSTEM MATTERS: a push is performed by the docker DAEMON,"
+              echo "so the cert must exist on the DAEMON's host. If this Jenkins runs in a"
+              echo "container with docker.sock mounted, the /etc/docker it can see is its"
+              echo "own, not the daemon's — the check above can pass or fail for the wrong"
+              echo "filesystem. Apply the fix on the VPS-7 HOST regardless of what this says:"
+              echo ""
+              echo "  mkdir -p /etc/docker/certs.d/127.0.0.1:5000"
+              echo "  cp ${CA_SRC} /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
+              echo ""
+              echo "Symptom when it is missing: docker falls back to plain HTTP against a"
+              echo "TLS listener and the push dies with 400 Bad Request — NOT 401."
+              exit 1
+            fi
           fi
 
           docker network inspect "${EDGE}" >/dev/null
         '''
+
+        // Authenticate NOW rather than after a ~15 minute build. VPS-7's htpasswd
+        // was regenerated on 2026-08-19 and no longer matches the value cloned
+        // from VPS-1, so stale credentials are a live failure mode — and one that
+        // currently surfaces only at the push stage, after the whole build.
+        configFileProvider([configFile(fileId: 'registry-creds', variable: 'REG_FILE')]) {
+          sh '''
+            set +x
+            . "$REG_FILE"
+            if ! echo "$REG_PASS" | docker login ${REGISTRY} -u "$REG_USER" --password-stdin >/dev/null 2>&1; then
+              echo "FATAL: docker login to ${REGISTRY} failed."
+              echo "401 => the registry-creds config file is stale; refresh it from VPS-7's htpasswd."
+              echo "400 => TLS/plain-HTTP mismatch, i.e. the CA above is not trusted by the daemon."
+              exit 1
+            fi
+            echo "registry login OK"
+          '''
+        }
       }
     }
 

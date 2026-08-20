@@ -135,6 +135,46 @@ describe('assessVolumeFeasibility', () => {
       expect(found).toEqual({ coronal: false, sagittal: false });
     });
 
+    it('captures the display set UIDs so the message can offer a one-click open', () => {
+      // Without the UID the best the notification can do is name the series and
+      // leave the radiologist to hunt for it mid-report.
+      const found = findAvailableReformats([
+        { SeriesDescription: 'COR MPR (derived)', SeriesNumber: 9001,
+          displaySetInstanceUID: 'ds-cor',
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+        { SeriesDescription: 'SAG MPR (derived)', SeriesNumber: 9002,
+          displaySetInstanceUID: 'ds-sag',
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+      ]);
+      expect(found.coronalDisplaySetUID).toBe('ds-cor');
+      expect(found.sagittalDisplaySetUID).toBe('ds-sag');
+    });
+
+    it('keeps the first matching series when a study has duplicates', () => {
+      // Re-ingested or re-pushed studies can carry two copies. Sending the
+      // radiologist to a stable one beats whichever happened to sort last.
+      const found = findAvailableReformats([
+        { SeriesDescription: 'COR MPR (derived)', SeriesNumber: 9001,
+          displaySetInstanceUID: 'ds-cor-1',
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+        { SeriesDescription: 'COR MPR (derived)', SeriesNumber: 9001,
+          displaySetInstanceUID: 'ds-cor-2',
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+      ]);
+      expect(found.coronalDisplaySetUID).toBe('ds-cor-1');
+    });
+
+    it('reports availability even when the UID is absent', () => {
+      // Detection and navigation are separate concerns: a series with no UID is
+      // still worth naming in the message, just not clickable.
+      const found = findAvailableReformats([
+        { SeriesDescription: 'COR MPR (derived)', SeriesNumber: 9001,
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+      ]);
+      expect(found.coronal).toBe(true);
+      expect(found.coronalDisplaySetUID).toBeUndefined();
+    });
+
     it('survives an empty or missing study list', () => {
       expect(findAvailableReformats([])).toEqual({ coronal: false, sagittal: false });
       // @ts-expect-error deliberately passing nothing

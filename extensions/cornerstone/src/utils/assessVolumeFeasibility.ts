@@ -44,6 +44,16 @@ export type VolumeVerdict = 'ok' | 'exceeds-memory' | 'exceeds-texture-limit' | 
 export interface AvailableReformats {
   coronal: boolean;
   sagittal: boolean;
+  /**
+   * Display set UIDs of the reformat series, when present.
+   *
+   * The booleans decide what the message is ALLOWED to say; these decide what
+   * the radiologist can be taken to in one click. Without the UID the best we
+   * could offer is "go and find it yourself" - which, mid-report, is the part
+   * that actually costs them time.
+   */
+  coronalDisplaySetUID?: string;
+  sagittalDisplaySetUID?: string;
 }
 
 /**
@@ -61,6 +71,7 @@ export function findAvailableReformats(displaySets: unknown[]): AvailableReforma
     const set = ds as {
       SeriesDescription?: string;
       SeriesNumber?: number | string;
+      displaySetInstanceUID?: string;
       instances?: Array<{ ImageType?: string[] }>;
     };
     const description = String(set?.SeriesDescription ?? '').toUpperCase();
@@ -71,11 +82,15 @@ export function findAvailableReformats(displaySets: unknown[]): AvailableReforma
     if (!isReformat) {
       continue;
     }
+    const uid = (set as { displaySetInstanceUID?: string })?.displaySetInstanceUID;
+
     if (seriesNumber === '9001' || description.startsWith('COR')) {
       result.coronal = true;
+      result.coronalDisplaySetUID = result.coronalDisplaySetUID ?? uid;
     }
     if (seriesNumber === '9002' || description.startsWith('SAG')) {
       result.sagittal = true;
+      result.sagittalDisplaySetUID = result.sagittalDisplaySetUID ?? uid;
     }
   }
 

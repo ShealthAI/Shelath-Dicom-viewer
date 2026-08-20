@@ -9,6 +9,13 @@ import {
 import { StackViewportData, VolumeViewportData } from '../../types/CornerstoneCacheService';
 import { VOLUME_LOADER_SCHEME } from '../../constants';
 
+/**
+ * Marks "this device cannot build this volume" as distinct from a genuine
+ * failure. Anything else that throws while building volume data is a real
+ * error and must keep propagating.
+ */
+const VOLUME_NOT_FEASIBLE = 'VolumeNotFeasibleError';
+
 class CornerstoneCacheService {
   static REGISTRATION = {
     name: 'cornerstoneCacheService',
@@ -76,7 +83,44 @@ class CornerstoneCacheService {
       dataShapeType === Enums.ViewportType.ORTHOGRAPHIC ||
       dataShapeType === Enums.ViewportType.VOLUME_3D
     ) {
-      viewportData = await this._getVolumeViewportData(dataSource, displaySets, cs3DViewportType);
+      try {
+        viewportData = await this._getVolumeViewportData(dataSource, displaySets, cs3DViewportType);
+      } catch (error) {
+        if ((error as Error)?.name !== VOLUME_NOT_FEASIBLE) {
+          throw error;
+        }
+
+        // GRACEFUL DOWNGRADE.
+        //
+        // Refusing to build the volume was correct - this GPU genuinely cannot
+        // hold it. What was wrong was refusing by throwing and stopping there:
+        // nothing caught it, so setViewportData never ran and the pane stayed
+        // flagged as a 3D viewport. Cornerstone then asked the browser for a 3D
+        // context anyway, got null, and vtk died on it - the black pane and the
+        // `setOpenGLRenderWindow` / `get3DContext` TypeErrors. The escaped
+        // rejection also surfaced as a crash dialog on top of our own polite
+        // message.
+        //
+        // Rebuilding as a stack is what turns a dead pane into a usable one:
+        // every image at full resolution, correct window/level, measurements
+        // intact. Nothing is downsampled and nothing is hidden - only the 3D
+        // reconstruction is unavailable, and the notification says so and
+        // offers the server-built coronal/sagittal series when the study has
+        // them.
+        console.warn('[shealth] falling back to 2D stack for this viewport');
+
+        dataShapeType = Enums.ViewportType.STACK;
+        viewportData = await this._getStackViewportData(
+          dataSource,
+          displaySets,
+          initialImageIndex,
+          Enums.ViewportType.STACK
+        );
+        viewportData.viewportType = Enums.ViewportType.STACK;
+        viewportData.dataShapeType = Enums.ViewportType.STACK;
+
+        return viewportData;
+      }
     } else if (dataShapeType === Enums.ViewportType.STACK) {
       // Everything else looks like a stack
       viewportData = await this._getStackViewportData(
@@ -100,6 +144,67 @@ class CornerstoneCacheService {
     viewportData.dataShapeType = dataShapeType;
 
     return viewportData;
+  }
+
+  /**
+   * Tell the radiologist that 3D is unavailable - once, and with a way out.
+   *
+   * TWO THINGS THIS FIXES
+   *
+   * 1. It fired once PER PANE. An MPR layout opens three viewports, so one
+   *    refusal produced up to three identical toasts stacked on the images.
+   *    A stable `id` makes the toast library replace the existing toast rather
+   *    than add another, so the count no longer depends on the layout.
+   *
+   *    Note the provider's own de-duplication does not help here: it is gated
+   *    on `type === 'error'` (NotificationProvider), and this is a warning -
+   *    correctly so, since nothing has failed. The id is what does the work.
+   *
+   * 2. It only described the problem. When the study has the server-built
+   *    coronal/sagittal series, the message now carries a button that opens
+   *    them in this very viewport. Those series are real lossless DICOM built
+   *    once at ingest, so this is not a downgraded picture - it is the same
+   *    reformatted view, computed somewhere that has the memory for it.
+   */
+  private _notifyVolumeUnavailable(displaySet, assessment, available): void {
+    const { uiNotificationService, viewportGridService } = this.servicesManager.services;
+    if (!uiNotificationService) {
+      return;
+    }
+
+    // Coronal is offered in preference to sagittal only because it is the more
+    // commonly read of the two; either is better than none.
+    const targetUID = available?.coronalDisplaySetUID ?? available?.sagittalDisplaySetUID;
+    const targetLabel = available?.coronalDisplaySetUID ? 'Open coronal' : 'Open sagittal';
+
+    const action =
+      targetUID && viewportGridService
+        ? {
+            label: targetLabel,
+            onClick: () => {
+              const viewportId = viewportGridService.getActiveViewportId?.();
+              if (!viewportId) {
+                return;
+              }
+              viewportGridService.setDisplaySetsForViewport({
+                viewportId,
+                displaySetInstanceUIDs: [targetUID],
+              });
+            },
+          }
+        : undefined;
+
+    uiNotificationService.show({
+      // Keyed by study, not by viewport or display set: the constraint is the
+      // device against this study, and it is the same fact however many panes
+      // discover it.
+      id: `mpr-unavailable-${displaySet?.StudyInstanceUID ?? 'unknown'}`,
+      title: '3D reconstruction unavailable on this device',
+      message: assessment.userMessage,
+      type: 'warning',
+      duration: 15000,
+      action,
+    });
   }
 
   public async invalidateViewportData(
@@ -355,16 +460,15 @@ class CornerstoneCacheService {
         if (!assessment.feasible) {
           console.warn(`[shealth] MPR unavailable: ${assessment.reason}`);
 
-          const { uiNotificationService } = this.servicesManager.services;
-          uiNotificationService?.show({
-            title: '3D reconstruction unavailable on this device',
-            message: assessment.userMessage,
-            type: 'warning',
-            duration: 15000,
-          });
+          this._notifyVolumeUnavailable(displaySet, assessment, available);
 
+          // Sentinel, not a crash. createViewportData catches this and rebuilds
+          // the viewport as a 2D stack, so the radiologist gets the images
+          // instead of a dead pane. It stays an exception because we are deep
+          // inside a loop building per-display-set volume data and there is no
+          // meaningful volume to return from here.
           const err = new Error(assessment.userMessage ?? assessment.reason);
-          err.name = 'VolumeNotFeasibleError';
+          err.name = VOLUME_NOT_FEASIBLE;
           throw err;
         }
 

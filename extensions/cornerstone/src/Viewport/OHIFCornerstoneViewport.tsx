@@ -301,7 +301,20 @@ const OHIFCornerstoneViewport = React.memo(
         );
       };
 
-      loadViewportData();
+      // Never let a load failure escape as an unhandled rejection.
+      //
+      // This was called bare. Anything that threw inside - a refused volume, a
+      // dropped network fetch mid-study - became an unhandled promise rejection
+      // that surfaced as a full-screen crash dialog over the images. The
+      // radiologist saw a stack trace; the pane stayed blank either way.
+      //
+      // Volume infeasibility is now handled properly upstream (the cache
+      // service downgrades to a 2D stack). This is the backstop for everything
+      // else: log it, leave the previous viewport content alone, and let the
+      // radiologist keep working rather than throwing a modal over the study.
+      loadViewportData().catch(error => {
+        console.error(`[shealth] failed to load viewport ${viewportId}:`, error);
+      });
     }, [viewportOptions, displaySets, dataSource]);
 
     const Notification = customizationService.getCustomization('ui.notificationComponent');

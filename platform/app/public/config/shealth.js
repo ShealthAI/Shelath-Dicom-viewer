@@ -272,6 +272,11 @@ window.config = {
             width: 'auto',
             objectFit: 'contain',
             display: 'block',
+            // The mark is dark-on-transparent, which disappears against the
+            // near-black chrome. Knock it to pure white the same way the main
+            // app's sidebar does (`brightness-0 invert`) so one asset serves
+            // both light and dark surroundings.
+            filter: 'brightness(0) invert(1)',
           },
         })
       );

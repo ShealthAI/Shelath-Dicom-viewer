@@ -64,7 +64,8 @@
     },
     {
       "packageName": "@ohif/extension-ultrasound-pleura-bline",
-      "version": "3.0.0"
+      "version": "3.0.0",
+      "default": false
     }
   ],
   "modes": [
@@ -78,13 +79,16 @@
       "packageName": "@ohif/mode-segmentation"
     },
     {
-      "packageName": "@ohif/mode-tmtv"
+      "packageName": "@ohif/mode-tmtv",
+      "default": false
     },
     {
-      "packageName": "@ohif/mode-microscopy"
+      "packageName": "@ohif/mode-microscopy",
+      "default": false
     },
     {
-      "packageName": "@ohif/mode-preclinical-4d"
+      "packageName": "@ohif/mode-preclinical-4d",
+      "default": false
     },
     {
       "packageName": "@ohif/mode-test",
@@ -98,7 +102,8 @@
     },
     {
       "packageName": "@ohif/mode-ultrasound-pleura-bline",
-      "version": "3.0.0"
+      "version": "3.0.0",
+      "default": false
     }
   ],
   "public": [

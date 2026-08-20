@@ -122,33 +122,43 @@ pipeline {
           set -e
           test -f "${DOCKERFILE}" || { echo "FATAL: ${DOCKERFILE} missing — wrong branch? (fork branch is shealth-main)"; exit 1; }
 
-          CA_DIR="/etc/docker/certs.d/127.0.0.1:5000"
-          CA_SRC="/opt/compose-files/test_vps/private-registry/certs/registry.crt"
+          # ── Registry CA, checked and installed ON THE DAEMON'S HOST ──────────
+          #
+          # A push is performed by the docker DAEMON, so the CA has to exist on the
+          # daemon's filesystem. This Jenkins is a container with docker.sock
+          # mounted, so its own /etc/docker is NOT the daemon's — an earlier version
+          # of this check tested the agent's filesystem and hard-failed a build that
+          # it had no way to fix, and no way to correctly diagnose.
+          #
+          # The helper container below is bind-mounted from the HOST: volume paths in
+          # `docker run` are resolved by the daemon, so /etc/docker and
+          # /opt/compose-files here are the host's, not this agent's. That makes the
+          # check authoritative and the fix possible from inside CI.
+          #
+          # This is not a new privilege. Mounting docker.sock is already
+          # root-equivalent on the host; this only uses it deliberately.
+          set +e
+          docker run --rm             -v /etc/docker:/host-etc-docker             -v /opt/compose-files:/host-compose:ro             alpine:3 sh -c '
+              set -e
+              CD="/host-etc-docker/certs.d/127.0.0.1:5000"
+              SRC="/host-compose/test_vps/private-registry/certs/registry.crt"
+              if [ -s "$CD/ca.crt" ]; then echo "host registry CA present"; exit 0; fi
+              if [ ! -f "$SRC" ]; then echo "MISSING-SOURCE"; exit 2; fi
+              mkdir -p "$CD"
+              cp "$SRC" "$CD/ca.crt"
+              echo "installed host registry CA from $SRC"
+            '
+          ca_rc=$?
+          set -e
 
-          if [ ! -f "${CA_DIR}/ca.crt" ]; then
-            echo "registry CA not present at ${CA_DIR}/ca.crt — attempting to install it"
-
-            # Self-heal when the source cert is reachable and we can write. The
-            # remedy is fully determined, so making a human run two fixed commands
-            # only converts a 20-second fix into a failed build plus a handover.
-            if [ -f "${CA_SRC}" ] && mkdir -p "${CA_DIR}" 2>/dev/null && cp "${CA_SRC}" "${CA_DIR}/ca.crt" 2>/dev/null; then
-              echo "installed ${CA_DIR}/ca.crt from ${CA_SRC} (certs.d is read per request — no daemon restart)"
-            else
-              echo "FATAL: registry CA missing and could not be installed automatically."
-              echo ""
-              echo "WHICH FILESYSTEM MATTERS: a push is performed by the docker DAEMON,"
-              echo "so the cert must exist on the DAEMON's host. If this Jenkins runs in a"
-              echo "container with docker.sock mounted, the /etc/docker it can see is its"
-              echo "own, not the daemon's — the check above can pass or fail for the wrong"
-              echo "filesystem. Apply the fix on the VPS-7 HOST regardless of what this says:"
-              echo ""
-              echo "  mkdir -p /etc/docker/certs.d/127.0.0.1:5000"
-              echo "  cp ${CA_SRC} /etc/docker/certs.d/127.0.0.1:5000/ca.crt"
-              echo ""
-              echo "Symptom when it is missing: docker falls back to plain HTTP against a"
-              echo "TLS listener and the push dies with 400 Bad Request — NOT 401."
-              exit 1
-            fi
+          if [ "$ca_rc" = "2" ]; then
+            echo "FATAL: the registry certificate is not on the VPS-7 host either."
+            echo "Expected at: /opt/compose-files/test_vps/private-registry/certs/registry.crt"
+            echo "Re-issue it, or copy it from the registry container, then re-run."
+            exit 1
+          elif [ "$ca_rc" != "0" ]; then
+            echo "WARNING: could not verify the host registry CA (exit ${ca_rc})."
+            echo "Continuing — the docker login below is the authoritative check."
           fi
 
           docker network inspect "${EDGE}" >/dev/null

@@ -152,7 +152,11 @@ const DefaultFallback = ({
   const [showDetails, setShowDetails] = useState(false);
   const { show } = useNotification();
 
-  const title = `${t('Something went wrong')}${!isProduction && ` ${t('in')} ${context}`}.`;
+  // `${cond && str}` prints the literal "false" when cond is false, because a
+  // template literal stringifies whatever && returns. In a production build
+  // that rendered "Something went wrongfalse." to radiologists. Ternary with an
+  // empty-string branch is the form that cannot do this.
+  const title = `${t('Something went wrong')}${isProduction ? '' : ` ${t('in')} ${context}`}.`;
   const subtitle = t('Sorry, something went wrong there. Try again.');
 
   const { errorTitle, code, firstFilename } = parseErrorStack(error);

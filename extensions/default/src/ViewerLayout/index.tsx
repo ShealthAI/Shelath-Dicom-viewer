@@ -1,12 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
 
-import { InvestigationalUseDialog } from '@ohif/ui-next';
 import { HangingProtocolService, CommandsManager } from '@ohif/core';
 import { useAppConfig } from '@state';
 import ViewerHeader from './ViewerHeader';
 import SidePanelWithServices from '../Components/SidePanelWithServices';
-import { Onboarding, ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@ohif/ui-next';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@ohif/ui-next';
 import useResizablePanels from './ResizablePanelsHook';
 
 const resizableHandleClassName = 'mt-[1px] bg-background';
@@ -217,8 +216,20 @@ function ViewerLayout({
           </ResizablePanelGroup>
         </React.Fragment>
       </div>
-      <Onboarding tours={customizationService.getCustomization('ohif.tours')} />
-      <InvestigationalUseDialog dialogConfiguration={appConfig?.investigationalUseDialog} />
+      {/* The onboarding tour and the investigational-use banner are removed
+        * deliberately, not disabled by config.
+        *
+        * Both interrupt a radiologist reading a study: the tour opens a
+        * step-through popover over the images on arrival, and the banner is an
+        * OHIF-branded notice in a product that ships to clinicians as Shealth
+        * Smart Care Viewer. `investigationalUseDialog: 'never'` in app-config
+        * already suppressed the banner, but app-config is mountable and
+        * overridable per deployment, so the guarantee was only as strong as
+        * whatever config a given environment happened to load - which is
+        * exactly how it came back on the test environment.
+        *
+        * Deleting the render sites is the only form of "off" that a
+        * misconfigured deployment cannot undo. */}
     </div>
   );
 }

@@ -8,7 +8,6 @@ import { useStudyListStateSync, useWorkListToolbarActions } from '../../hooks';
 import {
   StudyList,
   Icons,
-  InvestigationalUseDialog,
   useSessionStorage,
   type StudyRow,
   type OnStudyDoubleClick,
@@ -126,7 +125,8 @@ export default function WorkList({
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-black">
-      <InvestigationalUseDialog dialogConfiguration={appConfig?.investigationalUseDialog} />
+      {/* Investigational-use banner removed at the render site - see
+        * ViewerLayout for the reasoning. */}
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex min-h-0 flex-1 flex-col">
           <StudyList

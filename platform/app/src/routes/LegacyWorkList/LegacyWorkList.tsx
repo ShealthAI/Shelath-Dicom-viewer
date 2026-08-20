@@ -30,9 +30,7 @@ import {
   Clipboard,
   useModal,
   useSessionStorage,
-  Onboarding,
   ScrollArea,
-  InvestigationalUseDialog,
   formatDICOMDate,
   formatDICOMTime,
   parseStudyDateTimestamp,
@@ -560,8 +558,8 @@ function LegacyWorkList({
         WhiteLabeling={appConfig.whiteLabeling}
         showPatientInfo={PatientInfoVisibility.DISABLED}
       />
-      <Onboarding />
-      <InvestigationalUseDialog dialogConfiguration={appConfig?.investigationalUseDialog} />
+      {/* Tour and investigational-use banner removed at the render site -
+        * see ViewerLayout for the reasoning. */}
       <div className="flex h-full flex-col overflow-y-auto">
         <ScrollArea>
           <div className="flex grow flex-col">

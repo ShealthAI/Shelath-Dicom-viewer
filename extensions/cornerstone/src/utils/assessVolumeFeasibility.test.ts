@@ -1,4 +1,7 @@
-import { assessVolumeFeasibility } from './assessVolumeFeasibility';
+import {
+  assessVolumeFeasibility,
+  findAvailableReformats,
+} from './assessVolumeFeasibility';
 import { _resetGpuTierCache } from './getGpuTier';
 
 /**
@@ -51,8 +54,6 @@ describe('assessVolumeFeasibility', () => {
       const { userMessage } = assessVolumeFeasibility(displaySet(), ids(2518));
 
       expect(userMessage).toMatch(/full resolution/i);
-      // Points at the server-built planes rather than dead-ending.
-      expect(userMessage).toMatch(/COR MPR|SAG MPR/);
       expect(userMessage).not.toMatch(/texture|GPU|WebGL|buffer/i);
     });
   });
@@ -64,9 +65,6 @@ describe('assessVolumeFeasibility', () => {
 
       expect(result.verdict).toBe('exceeds-memory');
       expect(result.feasible).toBe(false);
-      // The message must give the radiologist somewhere to GO, not just a refusal:
-      // the server-side reformats are already in the study list.
-      expect(result.userMessage).toMatch(/COR MPR|SAG MPR/);
       expect(result.userMessage).toMatch(/1200 images/);
       expect(result.userMessage).toMatch(/full resolution/);
     });
@@ -86,6 +84,62 @@ describe('assessVolumeFeasibility', () => {
     const result = assessVolumeFeasibility(displaySet(), ids(200));
     expect(result.feasible).toBe(true);
     expect(result.verdict).toBe('ok');
+  });
+
+  describe('only mentions server reformats when the study actually has them', () => {
+    // Sending a radiologist to a series that does not exist is worse than saying
+    // nothing: they search an empty study list and conclude we are broken.
+    it('stays silent about COR/SAG when the reformat job has not run', () => {
+      onDevice('low');
+      const result = assessVolumeFeasibility(displaySet(), ids(2518));
+      expect(result.userMessage).not.toMatch(/COR MPR|SAG MPR/);
+      expect(result.userMessage).toMatch(/full resolution/);
+    });
+
+    it('names both planes when both series are present', () => {
+      onDevice('low');
+      const result = assessVolumeFeasibility(displaySet(), ids(2518), {
+        coronal: true,
+        sagittal: true,
+      });
+      expect(result.userMessage).toMatch(/"COR MPR" or "SAG MPR"/);
+    });
+
+    it('names only the plane that exists', () => {
+      onDevice('low');
+      const result = assessVolumeFeasibility(displaySet(), ids(2518), {
+        coronal: true,
+        sagittal: false,
+      });
+      expect(result.userMessage).toMatch(/"COR MPR"/);
+      expect(result.userMessage).not.toMatch(/SAG MPR/);
+    });
+  });
+
+  describe('findAvailableReformats', () => {
+    it('detects the series the ingest job writes', () => {
+      const found = findAvailableReformats([
+        { SeriesDescription: 'COR MPR (derived)', SeriesNumber: 9001,
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+        { SeriesDescription: 'SAG MPR (derived)', SeriesNumber: 9002,
+          instances: [{ ImageType: ['DERIVED', 'SECONDARY', 'REFORMATTED'] }] },
+      ]);
+      expect(found).toEqual({ coronal: true, sagittal: true });
+    });
+
+    it('does not mistake an acquired series for a reformat', () => {
+      const found = findAvailableReformats([
+        { SeriesDescription: 'Thorax 1.00 Br40', SeriesNumber: 3,
+          instances: [{ ImageType: ['ORIGINAL', 'PRIMARY', 'AXIAL'] }] },
+      ]);
+      expect(found).toEqual({ coronal: false, sagittal: false });
+    });
+
+    it('survives an empty or missing study list', () => {
+      expect(findAvailableReformats([])).toEqual({ coronal: false, sagittal: false });
+      // @ts-expect-error deliberately passing nothing
+      expect(findAvailableReformats(undefined)).toEqual({ coronal: false, sagittal: false });
+    });
   });
 
   describe('when metadata is missing', () => {

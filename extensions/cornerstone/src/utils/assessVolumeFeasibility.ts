@@ -32,6 +32,73 @@ import { estimateVolumeBytes, getRenderingProfile } from './renderingProfile';
 
 export type VolumeVerdict = 'ok' | 'exceeds-memory' | 'exceeds-texture-limit' | 'unknown';
 
+/**
+ * Server-built reformat series present in this study, if any.
+ *
+ * This is what decides whether the "cannot reconstruct here" message may point
+ * the radiologist at the coronal/sagittal series. Telling someone to open a
+ * series that does not exist is worse than saying nothing: they go looking,
+ * find an empty study list, and conclude the platform is broken. So the message
+ * is only allowed to mention them when they are actually there.
+ */
+export interface AvailableReformats {
+  coronal: boolean;
+  sagittal: boolean;
+}
+
+/**
+ * Detect our derived reformat series among a study's display sets.
+ *
+ * Matches on what the ingest job writes (see services/mpr_reformat.py): the
+ * DERIVED\SECONDARY\REFORMATTED ImageType, reserved SeriesNumbers 9001/9002,
+ * and the "COR/SAG MPR (derived)" descriptions. Any one is enough — a PACS may
+ * normalise the others.
+ */
+export function findAvailableReformats(displaySets: unknown[]): AvailableReformats {
+  const result: AvailableReformats = { coronal: false, sagittal: false };
+
+  for (const ds of displaySets ?? []) {
+    const set = ds as {
+      SeriesDescription?: string;
+      SeriesNumber?: number | string;
+      instances?: Array<{ ImageType?: string[] }>;
+    };
+    const description = String(set?.SeriesDescription ?? '').toUpperCase();
+    const seriesNumber = String(set?.SeriesNumber ?? '');
+    const imageType = (set?.instances?.[0]?.ImageType ?? []).map(v => String(v).toUpperCase());
+    const isReformat = imageType.includes('REFORMATTED') || description.includes('MPR');
+
+    if (!isReformat) {
+      continue;
+    }
+    if (seriesNumber === '9001' || description.startsWith('COR')) {
+      result.coronal = true;
+    }
+    if (seriesNumber === '9002' || description.startsWith('SAG')) {
+      result.sagittal = true;
+    }
+  }
+
+  return result;
+}
+
+/** Phrase naming whichever reformat series this study actually has. */
+function reformatHint(available?: AvailableReformats): string | null {
+  if (!available) {
+    return null;
+  }
+  if (available.coronal && available.sagittal) {
+    return 'Open the "COR MPR" or "SAG MPR" series in the study list for the coronal and sagittal views.';
+  }
+  if (available.coronal) {
+    return 'Open the "COR MPR" series in the study list for the coronal view.';
+  }
+  if (available.sagittal) {
+    return 'Open the "SAG MPR" series in the study list for the sagittal view.';
+  }
+  return null;
+}
+
 export interface VolumeAssessment {
   verdict: VolumeVerdict;
   /** True when a full-fidelity volume can be built on this device. */
@@ -65,7 +132,11 @@ function readDims(displaySet, slices: number) {
   return { rows, columns, slices, bytesPerVoxel };
 }
 
-export function assessVolumeFeasibility(displaySet, imageIds: string[]): VolumeAssessment {
+export function assessVolumeFeasibility(
+  displaySet,
+  imageIds: string[],
+  available?: AvailableReformats
+): VolumeAssessment {
   const slices = imageIds.length;
   const { tier, max3DTextureSize } = getGpuInfo();
   const profile = getRenderingProfile(tier);
@@ -106,11 +177,14 @@ export function assessVolumeFeasibility(displaySet, imageIds: string[]): VolumeA
       reason:
         `series is ${dims.columns}x${dims.rows}x${dims.slices}; this GPU caps a 3D texture ` +
         `axis at ${maxTexture}, so a full-fidelity volume cannot be created on this device`,
-      userMessage:
+      userMessage: [
         `3D reconstruction is not available for this series on this computer — it has ` +
-        `${slices} images, more than this graphics hardware can reconstruct. Open the ` +
-        `"COR MPR" or "SAG MPR" series in the study list for the coronal and sagittal ` +
-        `views, or use the standard view for all ${slices} images at full resolution.`,
+          `${slices} images, more than this graphics hardware can reconstruct.`,
+        reformatHint(available),
+        `All ${slices} images remain available at full resolution in the standard view.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
     };
   }
 
@@ -132,11 +206,14 @@ export function assessVolumeFeasibility(displaySet, imageIds: string[]): VolumeA
       reason:
         `volume needs ~${Math.round(estimatedBytes / 1048576)} MB of graphics memory; ` +
         `this ${tier}-tier device budget is ${Math.round(budgetBytes / 1048576)} MB`,
-      userMessage:
+      userMessage: [
         `3D reconstruction needs about ${Math.round(estimatedBytes / 1048576)} MB of graphics ` +
-        `memory, more than this computer has available. Open the "COR MPR" or "SAG MPR" ` +
-        `series in the study list for the coronal and sagittal views — all ${slices} images ` +
-        `also remain available at full resolution in the standard view.`,
+          `memory, more than this computer has available.`,
+        reformatHint(available),
+        `All ${slices} images remain available at full resolution in the standard view.`,
+      ]
+        .filter(Boolean)
+        .join(' '),
     };
   }
 

@@ -2,7 +2,10 @@ import { Types } from '@ohif/core';
 import { cache as cs3DCache, Enums, volumeLoader } from '@cornerstonejs/core';
 
 import getCornerstoneViewportType from '../../utils/getCornerstoneViewportType';
-import { assessVolumeFeasibility } from '../../utils/assessVolumeFeasibility';
+import {
+  assessVolumeFeasibility,
+  findAvailableReformats,
+} from '../../utils/assessVolumeFeasibility';
 import { StackViewportData, VolumeViewportData } from '../../types/CornerstoneCacheService';
 import { VOLUME_LOADER_SCHEME } from '../../constants';
 
@@ -336,7 +339,19 @@ class CornerstoneCacheService {
         // So we fail loudly and safely instead: no volume, a plain-language
         // explanation, and the study still opens in 2D where every single image
         // is present at full resolution. Nothing is lost, and nothing crashes.
-        const assessment = assessVolumeFeasibility(displaySet, volumeImageIds);
+        // Only offer the server-built coronal/sagittal series if this study
+        // actually has them — the reformat job is optional and may be off, and
+        // pointing a radiologist at a series that is not there sends them
+        // hunting through an empty study list.
+        const { displaySetService } = this.servicesManager.services;
+        const available = findAvailableReformats(
+          (displaySetService?.activeDisplaySets ?? []).filter(
+            (ds: { StudyInstanceUID?: string }) =>
+              ds?.StudyInstanceUID === displaySet.StudyInstanceUID
+          )
+        );
+
+        const assessment = assessVolumeFeasibility(displaySet, volumeImageIds, available);
         if (!assessment.feasible) {
           console.warn(`[shealth] MPR unavailable: ${assessment.reason}`);
 

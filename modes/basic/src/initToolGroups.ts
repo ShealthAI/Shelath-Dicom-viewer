@@ -85,8 +85,35 @@ function initDefaultToolGroup(extensionManager, toolGroupService, commandsManage
     ],
     enabled: [{ toolName: toolNames.ImageOverlayViewer }, { toolName: toolNames.ReferenceLines }],
     disabled: [
+      { toolName: toolNames.HoverMagnify },
       {
         toolName: toolNames.AdvancedMagnify,
+        configuration: {
+          magnifyingGlass: {
+            // Defaults were radius 125 / zoom 3, which reads as a blurry mush on
+            // real studies. Two reasons, and only one of them is fixable here:
+            //
+            //   1. FIXABLE - the loupe was a 250px circle magnifying 3x, so it
+            //      showed very few source pixels blown up hard. A larger circle
+            //      at a lower factor shows MORE of the actual acquired data,
+            //      which is what "sharper" means in practice.
+            //
+            //   2. NOT FIXABLE - zoom cannot add detail that was never acquired.
+            //      A diffusion/EPI brain series in this archive is 160x160; at
+            //      3x in a 250px window each acquired pixel covers ~5 screen
+            //      pixels. No renderer improves that, and any that appears to is
+            //      inventing data - which must never happen on a diagnostic
+            //      image. The honest fix is to show more real pixels, not to
+            //      smooth harder.
+            radius: 175,
+            zoomFactor: 2,
+            zoomFactorList: [1.5, 2, 2.5, 3, 4, 5, 6],
+            autoPan: {
+              enabled: true,
+              padding: 10,
+            },
+          },
+        },
       },
     ],
   };
@@ -267,8 +294,35 @@ function initMPRToolGroup(extensionManager, toolGroupService, commandsManager) {
           },
         },
       },
+      { toolName: toolNames.HoverMagnify },
       {
         toolName: toolNames.AdvancedMagnify,
+        configuration: {
+          magnifyingGlass: {
+            // Defaults were radius 125 / zoom 3, which reads as a blurry mush on
+            // real studies. Two reasons, and only one of them is fixable here:
+            //
+            //   1. FIXABLE - the loupe was a 250px circle magnifying 3x, so it
+            //      showed very few source pixels blown up hard. A larger circle
+            //      at a lower factor shows MORE of the actual acquired data,
+            //      which is what "sharper" means in practice.
+            //
+            //   2. NOT FIXABLE - zoom cannot add detail that was never acquired.
+            //      A diffusion/EPI brain series in this archive is 160x160; at
+            //      3x in a 250px window each acquired pixel covers ~5 screen
+            //      pixels. No renderer improves that, and any that appears to is
+            //      inventing data - which must never happen on a diagnostic
+            //      image. The honest fix is to show more real pixels, not to
+            //      smooth harder.
+            radius: 175,
+            zoomFactor: 2,
+            zoomFactorList: [1.5, 2, 2.5, 3, 4, 5, 6],
+            autoPan: {
+              enabled: true,
+              padding: 10,
+            },
+          },
+        },
       },
       { toolName: toolNames.ReferenceLines },
     ],

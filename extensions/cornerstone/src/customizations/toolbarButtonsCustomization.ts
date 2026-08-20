@@ -231,8 +231,10 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'link',
-      label: i18n.t('Buttons:Image Slice Sync'),
-      tooltip: i18n.t('Buttons:Enable position synchronization on stack viewports'),
+      label: i18n.t('Buttons:Link Scroll'),
+      tooltip: i18n.t(
+        'Buttons:Scroll all displayed images together, matched by patient position'
+      ),
       commands: {
         commandName: 'toggleSynchronizer',
         commandOptions: {
@@ -250,6 +252,42 @@ const toolbarButtons: Button[] = [
         {
           name: 'evaluate.viewport.supported',
           unsupportedViewportTypes: ['video', 'volume3d'],
+        },
+      ],
+    },
+  },
+  {
+    id: 'SharpPixels',
+    uiType: 'ohif.toolButton',
+    props: {
+      icon: 'icon-transferring',
+      label: i18n.t('Buttons:Sharp Pixels'),
+      tooltip: i18n.t(
+        'Buttons:Show acquired pixels exactly as scanned instead of smoothing between them'
+      ),
+      commands: 'toggleViewportInterpolation',
+      evaluate: [
+        {
+          name: 'evaluate.viewport.supported',
+          unsupportedViewportTypes: ['video', 'volume3d'],
+        },
+      ],
+    },
+  },
+  {
+    id: 'MagnifyZoom',
+    uiType: 'shealth.magnifyZoomMenu',
+    props: {
+      icon: 'tool-zoom',
+      label: i18n.t('Buttons:Magnifier Zoom'),
+      tooltip: i18n.t('Buttons:Set how strongly the magnifier zooms'),
+      // No `evaluate.cornerstoneTool` entry: this is a setting, not a tool. It
+      // stays usable whether or not the magnifier is currently on, so the zoom
+      // can be chosen up front rather than only while hovering.
+      evaluate: [
+        {
+          name: 'evaluate.viewport.supported',
+          unsupportedViewportTypes: ['video'],
         },
       ],
     },
@@ -415,12 +453,19 @@ const toolbarButtons: Button[] = [
     },
   },
   {
-    id: 'AdvancedMagnify',
+    id: 'HoverMagnify',
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-loupe',
-      label: i18n.t('Buttons:Magnify Probe'),
-      tooltip: i18n.t('Buttons:Magnify Probe'),
+      label: i18n.t('Buttons:Magnify'),
+      tooltip: i18n.t('Buttons:Magnifier follows the pointer while this is on'),
+      // Uses HoverMagnify, not AdvancedMagnify: radiologists expect the loupe to
+      // track the cursor, not to be pinned where they clicked.
+      //
+      // toggleActiveDisabledToolbar, NOT setToolActiveToolbar: this is an
+      // on/off switch, so pressing the button a second time must turn the loupe
+      // off. It also has to stay paired with the toggle evaluator below, which
+      // is what draws the button as lit while it is on.
       commands: 'toggleActiveDisabledToolbar',
       evaluate: [
         'evaluate.cornerstoneTool.toggle.ifStrictlyDisabled',
@@ -722,6 +767,16 @@ export const toolbarSections = {
     'Pan',
     'TrackballRotate',
     'WindowLevel',
+    // Both of these already existed, buried in the MoreTools overflow, which is
+    // why radiologists reported them as missing: "only the right image scrolls"
+    // and "can we click an organ and magnify it". They are everyday reading
+    // tools, so they belong on the toolbar itself, not two clicks away.
+    'ImageSliceSync',
+    'HoverMagnify',
+    // Immediately after the magnifier: it is that tool's strength setting, and
+    // a settings control separated from what it configures is a control nobody
+    // finds.
+    'MagnifyZoom',
     'Capture',
     'Layout',
     'Crosshairs',
@@ -764,11 +819,11 @@ export const toolbarSections = {
     'Reset',
     'rotate-right',
     'flipHorizontal',
-    'ImageSliceSync',
     'ReferenceLines',
     'ImageOverlayViewer',
     'StackScroll',
     'invert',
+    'SharpPixels',
     'Probe',
     'Cine',
     'Angle',
@@ -776,7 +831,6 @@ export const toolbarSections = {
     'Magnify',
     'CalibrationLine',
     'TagBrowser',
-    'AdvancedMagnify',
     'UltrasoundDirectionalTool',
     'WindowLevelRegion',
     'SegmentLabelTool',

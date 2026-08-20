@@ -8,6 +8,7 @@ import { WindowLevelActionMenuWrapper } from './components/WindowLevelActionMenu
 import { VOIManualControlMenuWrapper } from './components/VOIManualControlMenu';
 import { ThresholdMenuWrapper } from './components/ThresholdMenu/ThresholdMenuWrapper';
 import { OpacityMenuWrapper } from './components/OpacityMenu/OpacityMenuWrapper';
+import { MagnifyZoomMenuWrapper } from './components/MagnifyZoomMenu';
 import ModalityLoadBadge from './components/ModalityLoadBadge/ModalityLoadBadge';
 import NavigationComponent from './components/NavigationComponent/NavigationComponent';
 import TrackingStatus from './components/TrackingStatus/TrackingStatus';
@@ -253,6 +254,10 @@ export default function getToolbarModule({ servicesManager, extensionManager }: 
     {
       name: 'ohif.opacityMenu',
       defaultComponent: OpacityMenuWrapper,
+    },
+    {
+      name: 'shealth.magnifyZoomMenu',
+      defaultComponent: MagnifyZoomMenuWrapper,
     },
     {
       name: 'evaluate.windowLevelMenu',

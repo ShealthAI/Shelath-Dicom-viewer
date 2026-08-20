@@ -1,4 +1,5 @@
 import {
+  Enums as csCoreEnums,
   getEnabledElement,
   utilities as csUtils,
   Types as CoreTypes,
@@ -1210,6 +1211,36 @@ function commandsModule({
         return;
       }
       ops.invert(viewport);
+      viewport.render();
+    },
+    /**
+     * Switch the active viewport between smoothed and true-pixel rendering.
+     *
+     * At high zoom LINEAR interpolation invents intermediate pixels, which is
+     * what reads as "blurry" when a radiologist magnifies a low-matrix series
+     * (a 160x160 EPI blown up 3x has almost no real data behind it). NEAREST
+     * shows the acquired pixels exactly as sampled - blocky, but every value on
+     * screen is a value the scanner actually produced.
+     *
+     * Which is preferable is a genuine reading preference, not a default we
+     * should impose: smoothed looks better on thin-slice CT, true-pixel is what
+     * people want when interrogating a small structure. So it is a toggle.
+     */
+    toggleViewportInterpolation: ({ interpolationType }: { interpolationType?: number } = {}) => {
+      const viewport = _resolveViewport();
+      if (!viewport?.setProperties || !viewport?.getProperties) {
+        return;
+      }
+
+      // Read the values from the enum rather than hardcoding 0/1: these are
+      // numeric enum members, so a reorder upstream would silently flip the
+      // meaning of a literal.
+      const { NEAREST, LINEAR } = csCoreEnums.InterpolationType;
+
+      const current = viewport.getProperties()?.interpolationType;
+      const next = interpolationType ?? (current === NEAREST ? LINEAR : NEAREST);
+
+      viewport.setProperties({ interpolationType: next });
       viewport.render();
     },
     resetViewport: () => {
@@ -2524,6 +2555,9 @@ function commandsModule({
     },
     invertViewport: {
       commandFn: actions.invertViewport,
+    },
+    toggleViewportInterpolation: {
+      commandFn: actions.toggleViewportInterpolation,
     },
     resetViewport: {
       commandFn: actions.resetViewport,

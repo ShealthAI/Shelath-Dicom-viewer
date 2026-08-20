@@ -1,3 +1,4 @@
+import HoverMagnifyTool from './tools/HoverMagnifyTool';
 import {
   PanTool,
   WindowLevelTool,
@@ -59,6 +60,7 @@ export default function initCornerstoneTools(configuration = {}) {
   MarkerLabelmapTool.isAnnotation = false;
   ReferenceLinesTool.isAnnotation = false;
   AdvancedMagnifyTool.isAnnotation = false;
+  HoverMagnifyTool.isAnnotation = false;
   PlanarFreehandContourSegmentationTool.isAnnotation = false;
 
   init({
@@ -102,6 +104,10 @@ export default function initCornerstoneTools(configuration = {}) {
   addTool(TrackballRotateTool);
   addTool(ImageOverlayViewerTool);
   addTool(AdvancedMagnifyTool);
+  // Follows the pointer instead of requiring a held button (MagnifyTool) or
+  // being pinned where you clicked (AdvancedMagnifyTool). See the tool for why
+  // neither stock behaviour matched what radiologists asked for.
+  addTool(HoverMagnifyTool);
   addTool(UltrasoundDirectionalTool);
   addTool(UltrasoundPleuraBLineTool);
   addTool(PlanarFreehandROITool);
@@ -165,6 +171,7 @@ const toolNames = {
   SphereScissors: SphereScissorsTool.toolName,
   ImageOverlayViewer: ImageOverlayViewerTool.toolName,
   AdvancedMagnify: AdvancedMagnifyTool.toolName,
+  HoverMagnify: HoverMagnifyTool.toolName,
   UltrasoundDirectional: UltrasoundDirectionalTool.toolName,
   UltrasoundAnnotation: UltrasoundPleuraBLineTool.toolName,
   SplineROI: SplineROITool.toolName,

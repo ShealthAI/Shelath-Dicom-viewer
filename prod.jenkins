@@ -1,0 +1,557 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// shealth-ohif (Shealth AI DICOM Viewer) — PRODUCTION CI/CD  [SWARM SERVICE]
+//
+// Repo:   https://github.com/ShealthAI/Shelath-Dicom-viewer.git
+// Branch: shealth-main        ← the fork. `master` is upstream OHIF.
+// Runs on: VPS-4 Jenkins (yt-phy-59-shelhealth, 103.216.93.59, web on lo:8080).
+//
+// THIS IS NOT test.jenkins WITH THE NAMES CHANGED. The deploy mechanism is
+// different in three ways, and each one is a way to take prod down:
+//
+//   1. `ohif_app` is a SWARM SERVICE, not a `docker run` container. There is no
+//      stop/rename/run and no rename-back. Deploy = `docker service update`,
+//      rollback = `docker service rollback` (Swarm keeps the previous spec).
+//      VPS-4 is a swarm MANAGER (VPS-3 is Leader) — the update is issued here.
+//   2. The registry is VPS-3's `10.0.0.3:5000`, reached over WireGuard (wg0,
+//      VPS-4 = 10.0.0.4), TLS with a private CA. NOT 127.0.0.1:5000 — that is
+//      the VPS-7 test registry and does not exist on this host. The push also
+//      needs `--with-registry-auth` on the service update, or any node that is
+//      not VPS-3 cannot pull the new image and the task wedges in Pending.
+//   3. The live service still carries the STOCK layout: image `ohif/app:latest`
+//      and a read-only bind mount `/opt/volumes/ohif/app-config.js` →
+//      `/usr/share/nginx/html/app-config.js`. That mount MUST be removed in the
+//      same update that swaps the image. Our image bakes the config in; the
+//      entrypoint's `gzip app-config.js` cannot unlink a bind-mounted source
+//      (EBUSY) and, with `gzip_static always`, leaves a stale or 0-byte .gz
+//      being served — a blank viewer, no error, exit code 0.
+//      This pipeline READS the mount target out of the live service instead of
+//      hardcoding it: `--mount-rm` with a wrong string is a silent no-op.
+//
+// PORT. Stock `ohif/app` is nginx-unprivileged listening on 8080, and prod Caddy
+// dials `ohif_app:8080` over mesh-net. Our image's PORT is a build ARG that
+// becomes an ENV and drives both the nginx template and the HEALTHCHECK, so the
+// prod image is built with `--build-arg PORT=8080`. Build it with the default 80
+// and the service comes up "healthy" on a port nobody dials → 502 on
+// ohif.shealth.ai. Keep TARGET_PORT and the built image in agreement.
+//
+// PREREQ (one-time, on the VPS-4 HOST — not in the Jenkins container):
+//   /etc/docker/certs.d/10.0.0.3:5000/ca.crt present, or the push fails with
+//     400 Bad Request (plain HTTP against a TLS listener), NOT 401.
+//   Managed file `registry-creds` (REG_USER/REG_PASS) matching VPS-3's htpasswd.
+//   Preflight verifies both with one `docker login`, before the ~15 min build.
+//   It does NOT test for the cert file: the push is performed by the docker
+//   DAEMON, on the host, and this pipeline runs in a container with only
+//   docker.sock. A file test here reads the wrong filesystem — it FATALs on a
+//   correctly configured host and "passes" on a broken one. The login is the
+//   only check the container boundary cannot fool.
+//
+// Jenkins config files: registry-creds.  Optional credential: teams-alert.
+//
+// checkout → preflight (+ spec snapshot) → build → smoke the BAKED config →
+// push → manual approval → rolling service update → verify through Caddy →
+// rollback-on-fail.
+//
+// TWO THINGS SHARED WITH test.jenkins THAT ARE EASY TO GET WRONG
+// ------------------------------------------------------------------------------
+// 1. The build file is `Dockerfile.shealth`, NOT `Dockerfile`. The plain
+//    `Dockerfile` is upstream OHIF's and produces a stock viewer with none of the
+//    GPU-tier rendering, WebGL context-loss recovery or branding. A build that
+//    silently uses it looks successful and ships the wrong app.
+// 2. app-config is BAKED IN by design. `app-config.js` is 0 bytes and the real
+//    config lives in `app-config.js.gz`, served via `gzip_static always`. Setting
+//    the APP_CONFIG env var, or bind-mounting app-config.js, replaces it. The
+//    served byte count is the only signal — that is what Smoke and Verify check,
+//    plus a grep for `_backend`, which stock OHIF configs do not contain.
+//
+// Tags are the build number only — never `latest`. The running image must be
+// identifiable when someone asks what is in production.
+//
+// EDITING THE sh''' BLOCKS
+// ------------------------------------------------------------------------------
+// Groovy processes backslash escapes inside ''' ''' as well as inside " ". A `\\`
+// in the source reaches the shell as one `\`, and `\n` reaches it as a real
+// newline. Both have broken the test file before. Rules: never write a backslash
+// to mean a literal backslash, never use `\n` in a printf/curl format — end with
+// `; echo` instead. Trailing `\` line-continuations are fine.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+    timeout(time: 90, unit: 'MINUTES')   // cold pnpm install + viewer build ~15 min, + approval wait
+  }
+
+  parameters {
+    booleanParam(name: 'DEPLOY', defaultValue: true,
+                 description: 'Roll ohif_app after a successful push. Off = build + smoke + push only (safe on any branch).')
+    booleanParam(name: 'REQUIRE_APPROVAL', defaultValue: true,
+                 description: 'Ask for a human OK before touching production. Turn off only for an automated window.')
+    string(name: 'TARGET_PORT', defaultValue: '8080',
+           description: 'Container port prod Caddy dials on mesh-net (ohif_app:PORT). Baked into the image as ARG/ENV PORT. Stock ohif/app = 8080. Changing this without changing the Caddyfile = 502.')
+    string(name: 'MIN_CONFIG_BYTES', defaultValue: '10000',
+           description: 'Fail if the served app-config.js is smaller than this. v6 = 12547 B, v20 = 14221 B. Near-zero means the baked config was clobbered.')
+    string(name: 'APP_CONFIG', defaultValue: 'config/shealth.js',
+           description: 'Build-time config compiled into the image. Leave alone. Only change for a one-off diagnostic build (e.g. config/default.js) — and then do not deploy it.')
+    booleanParam(name: 'PRUNE', defaultValue: true,
+                 description: 'Delete local shealth-ohif images older than the last 3 builds on this host. Registry tags are never pruned.')
+  }
+
+  // NO pollSCM and NO SCM trigger on this job. Production does not deploy because
+  // someone pushed. Two Jenkins (VPS-4 and VPS-7) also watch this same repo and
+  // would race. Start prod builds by hand, or from a release job.
+
+  environment {
+    IMAGE       = 'shealth-ohif'
+    REGISTRY    = '10.0.0.3:5000'      // VPS-3 private registry over wg0. NOT 127.0.0.1:5000.
+    TAG         = "${BUILD_NUMBER}"
+    DOCKERFILE  = 'Dockerfile.shealth' // NOT Dockerfile — see header
+    SERVICE     = 'ohif_app'           // stack `ohif`, service key `app`
+    MESH        = 'mesh-net'           // attachable overlay shared with prod caddy
+    CADDY       = 'caddy'              // standalone container that owns :80/:443 on VPS-4
+    SMOKE_PORT  = '3010'               // free on VPS-4 per doc/ports.md
+    SMOKE_NAME  = 'ohif_smoke'
+    PUBLIC_HOST = 'ohif.shealth.ai'
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        cleanWs()
+        script { env.STEP = 'Checkout' }
+        checkout scm
+        script {
+          env.GIT_SHA    = sh(script: 'git rev-parse --short HEAD',        returnStdout: true).trim()
+          env.GIT_BRANCH_NAME = sh(script: 'git rev-parse --abbrev-ref HEAD || echo detached', returnStdout: true).trim()
+          echo "Building ${IMAGE}:${TAG} @ ${env.GIT_SHA} (${env.GIT_BRANCH_NAME}) for PRODUCTION"
+        }
+      }
+    }
+
+    stage('Preflight') {
+      steps {
+        script { env.STEP = 'Preflight' }
+
+        // Everything that can fail must fail here, with the fix in hand — not
+        // 15 minutes later at the push, and certainly not half way through a
+        // rolling update on production.
+        sh '''
+          set -e
+          test -f "${DOCKERFILE}" || { echo "FATAL: ${DOCKERFILE} missing — wrong branch? (the fork branch is shealth-main)"; exit 1; }
+
+          # NO CA FILE CHECK. /etc/docker/certs.d is read by the docker DAEMON on
+          # the host; this runs inside the Jenkins container. See the header.
+
+          # A service update can only be issued from a manager. VPS-4 is one
+          # (VPS-3 is Leader). If Raft is degraded this is where we stop.
+          state=$(docker info --format '{{.Swarm.LocalNodeState}}')
+          [ "$state" = "active" ] || { echo "FATAL: swarm LocalNodeState=$state on this host — cannot update a service."; exit 1; }
+          mgr=$(docker info --format '{{.Swarm.ControlAvailable}}')
+          [ "$mgr" = "true" ] || { echo "FATAL: this node is not a swarm MANAGER. Run the job on VPS-4."; exit 1; }
+          docker node ls >/dev/null || { echo "FATAL: manager unreachable / no quorum. 2-manager cluster (VPS-3 + VPS-4) — check both."; exit 1; }
+
+          docker service inspect "${SERVICE}" >/dev/null 2>&1 \
+            || { echo "FATAL: service ${SERVICE} does not exist. This job updates an existing service; it does not create one."; exit 1; }
+
+          docker network inspect "${MESH}" >/dev/null \
+            || { echo "FATAL: ${MESH} not present on this host."; exit 1; }
+        '''
+
+        // Snapshot the live spec BEFORE anything changes. `docker service rollback`
+        // is the real rollback path, but a spec on disk is what you read at 3am
+        // when rollback itself misbehaves.
+        sh '''
+          set -e
+          docker service inspect "${SERVICE}" > "${SERVICE}.pre-${TAG}.json"
+          echo "--- current spec ---"
+          docker service inspect "${SERVICE}" --format 'image={{.Spec.TaskTemplate.ContainerSpec.Image}}  replicas={{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{else}}global{{end}}'
+          docker service inspect "${SERVICE}" --format 'mounts={{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'
+          docker service inspect "${SERVICE}" --format 'ports={{json .Spec.EndpointSpec.Ports}}'
+          docker service ps "${SERVICE}" --no-trunc --format '{{.Name}}  {{.Node}}  {{.CurrentState}}  {{.Image}}' | head -10
+        '''
+
+        script {
+          // Read the app-config bind mount target out of the LIVE service. A
+          // hardcoded --mount-rm string that does not match is accepted by the
+          // CLI and silently removes nothing — the deploy then "succeeds" with
+          // the stock config mounted over our baked one, i.e. a blank viewer.
+          env.MOUNT_TARGET = sh(returnStdout: true, script: '''
+            docker service inspect "${SERVICE}" --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}' \
+              | grep -o '"Target":"[^"]*app-config[^"]*"' \
+              | head -1 | sed 's/.*"Target":"//; s/"$//'
+          ''').trim()
+
+          env.CUR_IMAGE = sh(returnStdout: true, script:
+            'docker service inspect "${SERVICE}" --format "{{.Spec.TaskTemplate.ContainerSpec.Image}}"').trim()
+
+          env.REPLICAS = sh(returnStdout: true, script:
+            'docker service inspect "${SERVICE}" --format "{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{else}}global{{end}}"').trim()
+
+          // Host-mode published ports cannot be handed from a task to its own
+          // replacement: swarm stops the old task, the new one cannot bind, and
+          // the service wedges Pending with prod down (the orthanc_pg lesson,
+          // doc/work_2026-08-21.md). ohif_app has no published ports today; this
+          // guard exists so a future change does not learn that the hard way.
+          env.HOST_MODE_PORTS = sh(returnStdout: true, script: '''
+            docker service inspect "${SERVICE}" --format '{{json .Spec.EndpointSpec.Ports}}' \
+              | grep -c '"PublishMode":"host"' || true
+          ''').trim()
+
+          echo "current image : ${env.CUR_IMAGE}"
+          echo "replicas      : ${env.REPLICAS}"
+          echo "config mount  : ${env.MOUNT_TARGET ?: '(none — already removed, nothing to --mount-rm)'}"
+
+          if (env.REPLICAS == '0') {
+            echo "WARNING: ${env.SERVICE} is at 0 replicas. The update will apply to a service that runs nothing."
+          }
+          if (env.HOST_MODE_PORTS != '0' && env.HOST_MODE_PORTS != '') {
+            error("FATAL: ${env.SERVICE} publishes ports in HOST mode. start-first would deadlock on the port bind. " +
+                  "Such a change needs `docker service rm` + `docker service create` in a window, not this pipeline.")
+          }
+        }
+        archiveArtifacts artifacts: "${SERVICE}.pre-${TAG}.json", allowEmptyArchive: true
+
+        // Authenticate NOW, not after the build. A stale managed file or an
+        // untrusted CA is a live failure mode and currently only surfaces at push.
+        configFileProvider([configFile(fileId: 'registry-creds', variable: 'REG_FILE')]) {
+          sh '''
+            set +x
+            . "$REG_FILE"
+            if out=$(echo "$REG_PASS" | docker login ${REGISTRY} -u "$REG_USER" --password-stdin 2>&1); then
+              echo "registry login OK (${REGISTRY})"
+            else
+              echo "$out"
+              case "$out" in
+                *400*)
+                  echo "FATAL: 400 = plain HTTP sent to a TLS listener. The DAEMON does not trust"
+                  echo "the VPS-3 registry CA. On the VPS-4 HOST, as root:"
+                  echo "  mkdir -p /etc/docker/certs.d/10.0.0.3:5000"
+                  echo "  cp <registry CA> /etc/docker/certs.d/10.0.0.3:5000/ca.crt"
+                  echo "No daemon restart needed — certs.d is read per request."
+                  ;;
+                *401*|*authentication*|*unauthorized*)
+                  echo "FATAL: 401 = CA trust is fine, the credentials are wrong."
+                  echo "Update the managed file: Jenkins -> Manage Jenkins -> Managed files -> registry-creds"
+                  ;;
+                *)
+                  echo "FATAL: registry ${REGISTRY} not reachable from this host."
+                  echo "It lives on VPS-3 over WireGuard. Check:  ping -c1 10.0.0.3  and  wg show"
+                  ;;
+              esac
+              exit 1
+            fi
+          '''
+        }
+      }
+    }
+
+    stage('Build image') {
+      steps {
+        script { env.STEP = 'Build image' }
+        // BuildKit is REQUIRED: Dockerfile.shealth declares
+        // `# syntax=docker/dockerfile:1.7-labs` and uses COPY --parents/--exclude.
+        // Never set DOCKER_BUILDKIT=0 in this job.
+        //
+        // PORT is baked so the image listens where prod Caddy dials and the
+        // image HEALTHCHECK probes the same port. See the header.
+        sh '''
+          set -e
+          DOCKER_BUILDKIT=1 docker build \
+            -f "${DOCKERFILE}" \
+            --build-arg APP_CONFIG="${APP_CONFIG}" \
+            --build-arg PORT="${TARGET_PORT}" \
+            --build-arg BUILD_VERSION="${TAG}" \
+            --build-arg BUILD_REVISION="${GIT_SHA}" \
+            -t "${IMAGE}:${TAG}" .
+
+          docker image inspect "${IMAGE}:${TAG}" \
+            --format 'built {{.Id}}  version={{index .Config.Labels "org.opencontainers.image.version"}}  rev={{index .Config.Labels "org.opencontainers.image.revision"}}  exposed={{json .Config.ExposedPorts}}'
+
+          # The image must have been built from OUR Dockerfile, not upstream's.
+          docker image inspect "${IMAGE}:${TAG}" --format '{{index .Config.Labels "org.opencontainers.image.vendor"}}' \
+            | grep -q "Shealth AI" || { echo "FATAL: vendor label missing — this is not the Shealth image (wrong Dockerfile?)"; exit 1; }
+        '''
+      }
+    }
+
+    stage('Smoke test') {
+      // Exercise the image in isolation BEFORE it reaches the registry or prod.
+      // This is where a clobbered app-config, a stock build, or a wrong PORT dies.
+      steps {
+        script { env.STEP = 'Smoke test' }
+        sh '''
+          set -e
+          docker rm -f "${SMOKE_NAME}" 2>/dev/null || true
+          # No -e APP_CONFIG and no -v app-config mount. Both replace the baked config.
+          docker run -d --name "${SMOKE_NAME}" -p 127.0.0.1:${SMOKE_PORT}:${TARGET_PORT} "${IMAGE}:${TAG}"
+
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SMOKE_PORT}/" || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ] || {
+            echo "FAIL: / returned $code on port ${TARGET_PORT}"
+            echo "If the container is up but nothing answers, the image was built with a different PORT than TARGET_PORT."
+            docker logs --tail 40 "${SMOKE_NAME}"; exit 1; }
+
+          # The entrypoint prints which path it took. "Not using custom APP_CONFIG"
+          # is the correct line — anything else means the baked config was replaced.
+          docker logs "${SMOKE_NAME}" 2>&1 | grep -E "APP_CONFIG|app-config" || true
+          docker logs "${SMOKE_NAME}" 2>&1 | grep -q "Not using custom APP_CONFIG" \
+            || { echo "FAIL: entrypoint rewrote app-config.js from the APP_CONFIG env var."; exit 1; }
+
+          bytes=$(curl -s "http://127.0.0.1:${SMOKE_PORT}/app-config.js" | wc -c)
+          echo "app-config.js served: ${bytes} bytes (floor ${MIN_CONFIG_BYTES})"
+          if [ "$bytes" -lt "${MIN_CONFIG_BYTES}" ]; then
+            echo "FAIL: app-config.js is ${bytes} bytes — the baked config is gone."
+            echo "Check for an app-config.js bind mount or an APP_CONFIG env var."
+            exit 1
+          fi
+
+          # Byte count alone cannot tell our config from a stock one of similar
+          # size. `_backend` is the query param our config reads to pick the
+          # DICOMweb backend; no upstream config mentions it.
+          curl -s "http://127.0.0.1:${SMOKE_PORT}/app-config.js" | grep -q "_backend" \
+            || { echo "FAIL: served config has no _backend handling — this is a STOCK OHIF config."; exit 1; }
+
+          # gzip_static always + gunzip on: the .gz IS the config. Prove it survived.
+          docker exec "${SMOKE_NAME}" test -s /usr/share/nginx/html/app-config.js.gz \
+            || { echo "FAIL: app-config.js.gz missing or empty in the image"; exit 1; }
+
+          # The image HEALTHCHECK catches "nginx alive, serving a broken shell".
+          hs=none
+          for i in $(seq 1 30); do
+            hs=$(docker inspect -f '{{.State.Health.Status}}' "${SMOKE_NAME}" 2>/dev/null || echo none)
+            [ "$hs" = "healthy" ] && break
+            [ "$hs" = "unhealthy" ] && { echo "FAIL: container went unhealthy"; docker logs --tail 40 "${SMOKE_NAME}"; exit 1; }
+            sleep 2
+          done
+          [ "$hs" = "healthy" ] || { echo "FAIL: never reached healthy (last=${hs})"; exit 1; }
+          echo "smoke OK (health=${hs}, port=${TARGET_PORT})"
+        '''
+      }
+      post {
+        always { sh 'docker rm -f "${SMOKE_NAME}" 2>/dev/null || true' }
+      }
+    }
+
+    stage('Push to registry') {
+      // Push BEFORE the service update. Swarm nodes pull from the registry — a
+      // locally-loaded image would need --no-resolve-image and only works on the
+      // node that happens to hold it.
+      // Numbered tag only, no :latest.
+      steps {
+        script { env.STEP = 'Push to registry' }
+        configFileProvider([configFile(fileId: 'registry-creds', variable: 'REG_FILE')]) {
+          sh '''
+            set +x
+            . "$REG_FILE"
+            echo "$REG_PASS" | docker login ${REGISTRY} -u "$REG_USER" --password-stdin
+            set -x
+            docker tag  "${IMAGE}:${TAG}" "${REGISTRY}/${IMAGE}:${TAG}"
+            docker push "${REGISTRY}/${IMAGE}:${TAG}"
+          '''
+        }
+      }
+    }
+
+    stage('Approval') {
+      when { expression { return params.DEPLOY && params.REQUIRE_APPROVAL } }
+      steps {
+        script { env.STEP = 'Approval' }
+        timeout(time: 30, unit: 'MINUTES') {
+          input message: "Roll PRODUCTION ${env.SERVICE} to ${env.REGISTRY}/${env.IMAGE}:${env.TAG} (${env.GIT_SHA})?\n" +
+                         "current: ${env.CUR_IMAGE}\n" +
+                         "mount-rm: ${env.MOUNT_TARGET ?: '(none)'}",
+                ok: 'Deploy'
+        }
+      }
+    }
+
+    stage('Deploy ohif_app') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        script { env.STEP = 'Deploy' }
+        // --with-registry-auth must be in the SAME command as --image: it ships
+        // this login's credentials to the nodes so they can pull from 10.0.0.3:5000.
+        // Without it a task on any node lands in Pending with "No such image".
+        //
+        // start-first: bring the new task up before killing the old one. Safe
+        // because ohif_app publishes no host-mode port (checked in Preflight).
+        // Note these update-* flags PERSIST in the service spec after this run.
+        //
+        // --detach=false makes the CLI wait for convergence and exit non-zero on
+        // failure; --update-failure-action rollback means swarm has already put
+        // the old spec back by the time we get that exit code.
+        //
+        // --mount-rm is added only when Preflight actually found the mount.
+        script {
+          def mountRm = env.MOUNT_TARGET ? "--mount-rm '${env.MOUNT_TARGET}' " : ""
+          if (!env.MOUNT_TARGET) {
+            echo "No app-config bind mount on the live service — skipping --mount-rm (already clean)."
+          }
+          sh """
+            set -e
+            docker service update \
+              --with-registry-auth \
+              --image '${env.REGISTRY}/${env.IMAGE}:${env.TAG}' \
+              ${mountRm}--update-order start-first \
+              --update-parallelism 1 \
+              --update-delay 10s \
+              --update-monitor 30s \
+              --update-failure-action rollback \
+              --rollback-order start-first \
+              --detach=false \
+              '${env.SERVICE}'
+          """
+        }
+        sh '''
+          set -e
+          echo "--- post-update spec ---"
+          docker service inspect "${SERVICE}" --format 'image={{.Spec.TaskTemplate.ContainerSpec.Image}}'
+          docker service inspect "${SERVICE}" --format 'mounts={{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'
+          docker service ps "${SERVICE}" --no-trunc --format '{{.Name}}  {{.Node}}  {{.CurrentState}}  {{.Error}}' | head -10
+
+          # The update converging is not the same as the mount being gone. A
+          # --mount-rm whose target string did not match is a silent no-op, and
+          # the viewer then serves the OLD mounted config with no error anywhere.
+          if docker service inspect "${SERVICE}" --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}' | grep -q "app-config"; then
+            echo "FAIL: the app-config bind mount is STILL on the service spec after --mount-rm."
+            echo "The target string did not match. Read the exact target from:"
+            echo "  docker service inspect ${SERVICE} --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}'"
+            exit 1
+          fi
+        '''
+      }
+    }
+
+    stage('Verify') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        script { env.STEP = 'Verify' }
+        sh '''
+          set -e
+
+          # 1. A running task, on the image we just pushed, with no failed sibling.
+          want="${REGISTRY}/${IMAGE}:${TAG}"
+          ok=0
+          for i in $(seq 1 60); do
+            running=$(docker service ps "${SERVICE}" --filter desired-state=running --format '{{.CurrentState}}' | grep -c '^Running' || true)
+            [ "$running" -ge 1 ] && { ok=1; break; }
+            sleep 2
+          done
+          docker service ps "${SERVICE}" --no-trunc --format '{{.Name}}  {{.Node}}  {{.CurrentState}}  {{.Image}}  {{.Error}}' | head -10
+          [ "$ok" = "1" ] || { echo "FAIL: no Running task for ${SERVICE}"; exit 1; }
+
+          docker service ps "${SERVICE}" --filter desired-state=running --no-trunc --format '{{.Image}}' \
+            | grep -q "${IMAGE}:${TAG}" \
+            || { echo "FAIL: the running task is not on ${want} — swarm may have rolled back already."; exit 1; }
+
+          # 2. Through the exact path prod Caddy uses: the service name on
+          #    mesh-net, on TARGET_PORT. NOT the alias `app` — ohif_app and the old
+          #    orthanc_app both claim it, so `app` can resolve to the wrong service.
+          code=000
+          for i in $(seq 1 30); do
+            code=$(docker exec "${CADDY}" wget -S -O /dev/null "http://${SERVICE}:${TARGET_PORT}/" 2>&1 | grep -o 'HTTP/1.[01] [0-9]*' | tail -1 | grep -o '[0-9]*$' || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          echo "caddy -> ${SERVICE}:${TARGET_PORT}/ = ${code}"
+          [ "$code" = "200" ] || {
+            echo "FAIL: Caddy cannot reach ${SERVICE}:${TARGET_PORT}. This is the 502 gate."
+            echo "Check: is ${CADDY} attached to ${MESH}?  docker inspect ${CADDY} --format '{{json .NetworkSettings.Networks}}'"
+            exit 1; }
+
+          # 3. The served config, over the wire, in production.
+          bytes=$(docker exec "${CADDY}" wget -q -O - "http://${SERVICE}:${TARGET_PORT}/app-config.js" | wc -c)
+          echo "prod app-config.js: ${bytes} bytes (floor ${MIN_CONFIG_BYTES})"
+          [ "$bytes" -ge "${MIN_CONFIG_BYTES}" ] || { echo "FAIL: config ${bytes} B — baked config clobbered in prod."; exit 1; }
+          docker exec "${CADDY}" wget -q -O - "http://${SERVICE}:${TARGET_PORT}/app-config.js" | grep -q "_backend" \
+            || { echo "FAIL: prod is serving a STOCK OHIF config."; exit 1; }
+
+          # 4. Front door, best-effort. Jenkins runs with network_mode: host on
+          #    VPS-4, so 127.0.0.1:443 is Caddy. Non-fatal: DNS/TLS problems here
+          #    are not this deploy's doing and must not trigger a rollback.
+          curl -skI "https://${PUBLIC_HOST}/" --resolve "${PUBLIC_HOST}:443:127.0.0.1" | head -3 || true
+        '''
+      }
+    }
+
+    stage('Prune') {
+      when { expression { return params.PRUNE } }
+      steps {
+        script { env.STEP = 'Prune' }
+        // Local images on THIS host only. Registry tags are kept — they are the
+        // rollback material for every other node.
+        sh '''
+          for repo in "${IMAGE}" "${REGISTRY}/${IMAGE}"; do
+            docker images "$repo" --format '{{.Tag}}' \
+              | grep -E '^[0-9]+$' | sort -rn | tail -n +4 \
+              | while read t; do echo "Prune $repo:$t"; docker rmi "$repo:$t" 2>/dev/null || true; done
+          done
+        '''
+      }
+    }
+  }
+
+  post {
+    success {
+      script { notifyTeams('SUCCESS', "PROD ohif_app on ${env.IMAGE}:${env.TAG} — healthy through Caddy") }
+    }
+    failure {
+      script {
+        if (env.STEP == 'Deploy' || env.STEP == 'Verify') {
+          echo "Failure @ ${env.STEP} — rolling ${env.SERVICE} back to the previous spec"
+          // `docker service rollback` restores the WHOLE previous spec: the old
+          // image AND the app-config bind mount that went with it. That is the
+          // correct pairing — the stock image needs that mount.
+          sh '''
+            set +e
+            docker service rollback --detach=false "${SERVICE}"
+            docker service ps "${SERVICE}" --no-trunc --format '{{.Name}}  {{.Node}}  {{.CurrentState}}  {{.Image}}' | head -10
+            docker exec "${CADDY}" wget -S -O /dev/null "http://${SERVICE}:${TARGET_PORT}/" 2>&1 | head -1
+            echo "If the service is still wedged, the spec before this build is archived as ${SERVICE}.pre-${TAG}.json"
+          '''
+          notifyTeams('FAILED', "Failed @ ${env.STEP} — ohif_app ROLLED BACK to ${env.CUR_IMAGE}")
+        } else {
+          notifyTeams('FAILED', "Failed @ ${env.STEP} — production untouched")
+        }
+      }
+    }
+    always {
+      sh 'docker rm -f "${SMOKE_NAME}" 2>/dev/null || true'
+      sh 'docker logout ${REGISTRY} 2>/dev/null || true'
+    }
+  }
+}
+
+def notifyTeams(String status, String detail) {
+  try {
+    withCredentials([string(credentialsId: 'teams-alert', variable: 'TEAMS_WEBHOOK')]) {
+      def color = (status == 'SUCCESS') ? '2EB67D' : 'E01E5A'
+      def payload = """{
+        "@type":"MessageCard","@context":"http://schema.org/extensions",
+        "themeColor":"${color}","summary":"shealth-ohif PROD ${status}",
+        "sections":[{
+          "activityTitle":"shealth-ohif PROD build #${env.BUILD_NUMBER} — ${status}",
+          "facts":[
+            {"name":"Status","value":"${status}"},
+            {"name":"Detail","value":"${detail}"},
+            {"name":"Commit","value":"${env.GIT_SHA ?: 'n/a'}"},
+            {"name":"Image","value":"${env.REGISTRY}/${env.IMAGE}:${env.TAG}"},
+            {"name":"Service","value":"${env.SERVICE}"}
+          ],"markdown":true}]}"""
+      writeFile file: 'teams.json', text: payload
+      sh 'curl -s -H "Content-Type: application/json" -d @teams.json "$TEAMS_WEBHOOK" || true'
+      sh 'rm -f teams.json || true'
+    }
+  } catch (e) {
+    echo "Teams notify skipped: ${e.message}"
+  }
+}

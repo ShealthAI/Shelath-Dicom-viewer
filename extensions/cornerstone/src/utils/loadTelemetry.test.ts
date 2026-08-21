@@ -1,25 +1,22 @@
 /**
- * This wraps a logging helper that runs on every study open. The failures worth
+ * This wraps a timing helper that runs on every study open. The failures worth
  * guarding are not "the number is wrong" — a slightly-off millisecond count
- * costs nothing — but "the wrap broke the viewer" and "the numbers are
- * fabricated". A telemetry module that throws, or that reports timings for
- * things that never ran, is worse than no telemetry at all.
+ * costs nothing — but "the wrap broke the viewer", "the numbers are fabricated",
+ * and "the wrap captured nothing at all".
+ *
+ * The third one is not hypothetical. The first version of this module wrapped
+ * `log.time` imported from '@ohif/core'. Every test below passed, because the
+ * suite imported the same module instance the module under test did. In the
+ * real multi-bundle build it does not: '@ohif/core' is instantiated more than
+ * once, so the wrap landed on a copy nobody called. It shipped to production
+ * and captured zero timings, silently.
+ *
+ * Hence the final block: the wrap now targets `console`, and that block drives
+ * it the way OHIF actually does — through a separate `log` object this module
+ * has never seen — so "wrapped the wrong object" fails here instead of in
+ * production.
  */
 
-jest.mock('@ohif/core', () => {
-  const log = {
-    timingKeys: {} as Record<string, boolean>,
-    time(key: string) {
-      log.timingKeys[key] = true;
-    },
-    timeEnd(key: string) {
-      log.timingKeys[key] = false;
-    },
-  };
-  return { log };
-});
-
-import { log } from '@ohif/core';
 import {
   TELEMETRY_MESSAGE_TYPE,
   _resetLoadTelemetry,
@@ -32,7 +29,6 @@ describe('loadTelemetry', () => {
 
   beforeEach(() => {
     _resetLoadTelemetry();
-    (log as { timingKeys: Record<string, boolean> }).timingKeys = {};
     posted = [];
 
     originalParent = window.parent;
@@ -44,10 +40,17 @@ describe('loadTelemetry', () => {
     });
 
     jest.spyOn(console, 'info').mockImplementation(() => undefined);
-    performance.clearMarks?.();
+    // Silence the real timer output, and give the wrap a known original to
+    // delegate to. Spying BEFORE install matters: install captures whatever is
+    // on console at that moment.
+    jest.spyOn(console, 'time').mockImplementation(() => undefined);
+    jest.spyOn(console, 'timeEnd').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
+    // Unwrap before restoring the spies, or the wrapper outlives the spy it
+    // captured and leaks into the next test file.
+    _resetLoadTelemetry();
     Object.defineProperty(window, 'parent', { configurable: true, value: originalParent });
     jest.restoreAllMocks();
   });
@@ -55,8 +58,8 @@ describe('loadTelemetry', () => {
   it('reports a duration for a timing that ran', () => {
     installLoadTelemetry();
 
-    log.time('studyToFirstImage');
-    log.timeEnd('studyToFirstImage');
+    console.time('studyToFirstImage');
+    console.timeEnd('studyToFirstImage');
 
     expect(posted).toHaveLength(1);
     const msg = posted[0] as { type: string; timing: { key: string; duration: number } };
@@ -71,21 +74,23 @@ describe('loadTelemetry', () => {
     // instant loads and quietly poison whatever dashboard consumes them.
     installLoadTelemetry();
 
-    log.timeEnd('neverStarted');
+    console.timeEnd('neverStarted');
 
     expect(posted).toHaveLength(0);
   });
 
-  it('still delegates to the original log implementation', () => {
-    // The wrap must not swallow upstream behaviour — console timing has to keep
-    // working for anyone debugging with DevTools open.
+  it('still delegates to the original console implementation', () => {
+    // The wrap must not swallow console timing — it has to keep working for
+    // anyone debugging with DevTools open.
+    const time = console.time as jest.Mock;
+    const timeEnd = console.timeEnd as jest.Mock;
     installLoadTelemetry();
 
-    log.time('displaySetsToAllImages');
-    expect(log.timingKeys['displaySetsToAllImages']).toBe(true);
+    console.time('displaySetsToAllImages');
+    console.timeEnd('displaySetsToAllImages');
 
-    log.timeEnd('displaySetsToAllImages');
-    expect(log.timingKeys['displaySetsToAllImages']).toBe(false);
+    expect(time).toHaveBeenCalledWith('displaySetsToAllImages');
+    expect(timeEnd).toHaveBeenCalledWith('displaySetsToAllImages');
   });
 
   it('is idempotent — installing twice does not double-report', () => {
@@ -94,8 +99,20 @@ describe('loadTelemetry', () => {
     installLoadTelemetry();
     installLoadTelemetry();
 
-    log.time('scriptToView');
-    log.timeEnd('scriptToView');
+    console.time('displaySetsToAllImages');
+    console.timeEnd('displaySetsToAllImages');
+
+    expect(posted).toHaveLength(1);
+  });
+
+  it('does not report the same timing twice after a single start', () => {
+    // A double timeEnd would otherwise emit a second, meaningless duration
+    // measured from a start that was already consumed.
+    installLoadTelemetry();
+
+    console.time('studyToFirstImage');
+    console.timeEnd('studyToFirstImage');
+    console.timeEnd('studyToFirstImage');
 
     expect(posted).toHaveLength(1);
   });
@@ -114,8 +131,8 @@ describe('loadTelemetry', () => {
     installLoadTelemetry();
 
     expect(() => {
-      log.time('studyToFirstImage');
-      log.timeEnd('studyToFirstImage');
+      console.time('studyToFirstImage');
+      console.timeEnd('studyToFirstImage');
     }).not.toThrow();
   });
 
@@ -124,21 +141,20 @@ describe('loadTelemetry', () => {
     installLoadTelemetry();
 
     expect(() => {
-      log.time('studyToFirstImage');
-      log.timeEnd('studyToFirstImage');
+      console.time('studyToFirstImage');
+      console.timeEnd('studyToFirstImage');
     }).not.toThrow();
     expect(posted).toHaveLength(0);
   });
 
-  it('reports scriptToView even though its mark predates this module', () => {
+  it('reports scriptToView even though its start predates this module', () => {
     // scriptToView is started by an inline script in index.html, long before
-    // any bundle loads, so there is no mark to measure against. It is the single
+    // any bundle loads, so there is no start time to subtract. It is the single
     // most useful number of the set — time from script start to a visible image
     // — so it falls back to the navigation clock rather than being dropped.
     installLoadTelemetry();
 
-    (log as { timingKeys: Record<string, boolean> }).timingKeys['scriptToView'] = true;
-    log.timeEnd('scriptToView');
+    console.timeEnd('scriptToView');
 
     expect(posted).toHaveLength(1);
     const msg = posted[0] as { timing: { key: string; duration: number } };
@@ -146,16 +162,64 @@ describe('loadTelemetry', () => {
     expect(msg.timing.duration).toBeGreaterThan(0);
   });
 
-  it('tolerates upstream changing shape', () => {
-    // If log.time / log.timeEnd ever move, losing telemetry is acceptable;
-    // throwing during viewer startup is not.
+  it('tolerates console timing being absent', () => {
+    // Losing telemetry is acceptable; throwing during viewer startup is not.
     _resetLoadTelemetry();
-    const saved = { time: log.time, timeEnd: log.timeEnd };
-    (log as Record<string, unknown>).time = undefined;
-    (log as Record<string, unknown>).timeEnd = undefined;
+    const saved = { time: console.time, timeEnd: console.timeEnd };
+    (console as Record<string, unknown>).time = undefined;
+    (console as Record<string, unknown>).timeEnd = undefined;
 
     expect(() => installLoadTelemetry()).not.toThrow();
 
-    Object.assign(log, saved);
+    Object.assign(console, saved);
+  });
+
+  describe('driven the way OHIF drives it', () => {
+    /**
+     * A stand-in for the `log` in platform/core/src/log.js. The module under
+     * test holds no reference to this object — which is the whole point. If
+     * someone reverts to wrapping an imported `log`, every other test in this
+     * file still passes and this one fails.
+     */
+    const makeLog = () => {
+      const log = {
+        timingKeys: { scriptToView: true } as Record<string, boolean>,
+        time: (key: string) => {
+          log.timingKeys[key] = true;
+          console.time(key);
+        },
+        timeEnd: (key: string) => {
+          if (!log.timingKeys[key]) {
+            return;
+          }
+          log.timingKeys[key] = false;
+          console.timeEnd(key);
+        },
+      };
+      return log;
+    };
+
+    it('captures timings routed through a log object it never imported', () => {
+      installLoadTelemetry();
+      const log = makeLog();
+
+      log.time('displaySetsToAllImages');
+      log.timeEnd('displaySetsToAllImages');
+
+      expect(posted).toHaveLength(1);
+      const msg = posted[0] as { timing: { key: string } };
+      expect(msg.timing.key).toBe('displaySetsToAllImages');
+    });
+
+    it('respects the suppression upstream applies', () => {
+      // log.timeEnd returns early when the key was never started, so nothing
+      // reaches console — and nothing should be reported.
+      installLoadTelemetry();
+      const log = makeLog();
+
+      log.timeEnd('neverStarted');
+
+      expect(posted).toHaveLength(0);
+    });
   });
 });

@@ -1,5 +1,3 @@
-import { log } from '@ohif/core';
-
 /**
  * Capture the viewer's own load timings and hand them to the host application.
  *
@@ -14,11 +12,18 @@ import { log } from '@ohif/core';
  * settled, because the one system that knows how long anything took writes it to
  * a console nobody is reading.
  *
- * WHY WRAP RATHER THAN EDIT `log`
- * `platform/core/src/log.js` is upstream. Editing it would work and would be
- * carried as a conflict at every Cornerstone bump, for no benefit - `log` is a
- * plain object, so its methods can be wrapped from here and upstream stays
- * untouched.
+ * WHY WRAP `console`, NOT `@ohif/core`'s `log`
+ * The first version wrapped `log.time` / `log.timeEnd`, imported from
+ * '@ohif/core'. It deployed cleanly, threw nothing, and captured nothing.
+ *
+ * The reason: in a multi-bundle build `@ohif/core` is instantiated more than
+ * once, so the `log` this module imported was a DIFFERENT object from the one
+ * OHIF's own code calls. The wrap installed perfectly - on a copy nobody used.
+ *
+ * `console` cannot have that problem. There is exactly one per realm, and
+ * `log.time` is a thin wrapper over `console.time`, so hooking the console
+ * captures the same events no matter how many copies of `@ohif/core` exist.
+ * It also drops the dependency on upstream's logging shape entirely.
  *
  * WHY postMessage RATHER THAN AN HTTP POST
  * The viewer runs in an iframe inside the workspace, on a different origin. A
@@ -108,23 +113,23 @@ function report(timing: LoadTiming): void {
 }
 
 /**
- * Wrap `log.time` / `log.timeEnd` so every timing OHIF already records is also
+ * Wrap `console.time` / `console.timeEnd` so every timing OHIF records is also
  * measured numerically and reported.
  *
  * Idempotent: installing twice would double-report, and React StrictMode calls
  * effects twice in development.
  */
 export function installLoadTelemetry(): void {
-  if (alreadyWrapped(log.time) || alreadyWrapped(log.timeEnd)) {
+  if (alreadyWrapped(console.time) || alreadyWrapped(console.timeEnd)) {
     return;
   }
 
-  const originalTime = log.time?.bind(log);
-  const originalTimeEnd = log.timeEnd?.bind(log);
+  const originalTime = console.time?.bind(console);
+  const originalTimeEnd = console.timeEnd?.bind(console);
 
   if (!originalTime || !originalTimeEnd) {
-    // Upstream changed shape. Losing telemetry is acceptable; breaking the
-    // viewer because a logging helper moved is not.
+    // No console timing in this environment. Losing telemetry is acceptable;
+    // breaking the viewer over a logging helper is not.
     return;
   }
 
@@ -140,15 +145,7 @@ export function installLoadTelemetry(): void {
   };
 
   const wrappedTimeEnd: Wrappable = (key: string) => {
-    // Read the flag BEFORE delegating: upstream clears it, and a timing that
-    // was never started must not be reported as a zero-length one.
-    const wasRunning = Boolean(log.timingKeys?.[key]);
-
     originalTimeEnd(key);
-
-    if (!wasRunning) {
-      return;
-    }
 
     try {
       const start = startedAt.get(key);
@@ -182,8 +179,8 @@ export function installLoadTelemetry(): void {
   wrappedTime.__original = originalTime;
   wrappedTimeEnd.__original = originalTimeEnd;
 
-  log.time = wrappedTime;
-  log.timeEnd = wrappedTimeEnd;
+  console.time = wrappedTime;
+  console.timeEnd = wrappedTimeEnd;
 }
 
 /**
@@ -194,14 +191,14 @@ export function installLoadTelemetry(): void {
  * marker above exists to prevent, and it is how the stacking bug was found.
  */
 export function _resetLoadTelemetry(): void {
-  const time = log.time as Wrappable;
-  const timeEnd = log.timeEnd as Wrappable;
+  const time = console.time as Wrappable;
+  const timeEnd = console.timeEnd as Wrappable;
 
   if (alreadyWrapped(time) && time.__original) {
-    log.time = time.__original as typeof log.time;
+    console.time = time.__original as typeof console.time;
   }
   if (alreadyWrapped(timeEnd) && timeEnd.__original) {
-    log.timeEnd = timeEnd.__original as typeof log.timeEnd;
+    console.timeEnd = timeEnd.__original as typeof console.timeEnd;
   }
   startedAt.clear();
 }

@@ -47,9 +47,15 @@
 //
 // Jenkins config files: registry-creds.  Optional credential: teams-alert.
 //
-// checkout → preflight (+ spec snapshot) → build → smoke the BAKED config →
-// push → manual approval → rolling service update → verify through Caddy →
-// rollback-on-fail.
+// checkout → preflight → [DEPLOY only: swarm + spec snapshot] → registry login →
+// build → smoke the BAKED config → push → manual approval → rolling service
+// update → verify through Caddy → rollback-on-fail.
+//
+// PREFLIGHT IS THREE STAGES, and the split is deliberate. Only the swarm one is
+// gated on DEPLOY. With the cluster degraded (VPS-4 LocalNodeState=error, build
+// 2 on 2026-08-21) an ungated swarm check kills the build before it compiles
+// anything, so DEPLOY=false could not do what its description promises. The
+// Dockerfile test and the registry login stay ungated: every build pushes.
 //
 // TWO THINGS SHARED WITH test.jenkins THAT ARE EASY TO GET WRONG
 // ------------------------------------------------------------------------------
@@ -145,14 +151,38 @@ pipeline {
 
           # NO CA FILE CHECK. /etc/docker/certs.d is read by the docker DAEMON on
           # the host; this runs inside the Jenkins container. See the header.
+        '''
+      }
+    }
+
+    // Swarm / service / network state only matters to a build that will DEPLOY.
+    // Gated so DEPLOY=false does what its description promises — build + smoke
+    // + push, runnable while the cluster is degraded. Build 2 (2026-08-21) died
+    // here on LocalNodeState=error having built nothing, with DEPLOY irrelevant.
+    stage('Preflight: swarm') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        script { env.STEP = 'Preflight: swarm' }
+        sh '''
+          set -e
 
           # A service update can only be issued from a manager. VPS-4 is one
-          # (VPS-3 is Leader). If Raft is degraded this is where we stop.
-          state=$(docker info --format '{{.Swarm.LocalNodeState}}')
-          [ "$state" = "active" ] || { echo "FATAL: swarm LocalNodeState=$state on this host — cannot update a service."; exit 1; }
+          # (the `ubuntu` node is Leader). If Raft is degraded this is where we stop.
+          #
+          # DO NOT gate on {{.Swarm.LocalNodeState}}. That field latches on error
+          # and does NOT clear when the swarm node recovers. On 2026-08-19 a cert
+          # rotation restarted VPS-4's swarm node; it came back — Reachable to the
+          # Leader, raft fine, `docker node ls` / `service ls` / `service ps` all
+          # answering — but the flag stayed `error` and killed build 2 before it
+          # compiled anything. Nothing logged `cluster exited`; nothing had exited.
+          # Gate on what the deploy actually needs instead: a manager that answers.
           mgr=$(docker info --format '{{.Swarm.ControlAvailable}}')
           [ "$mgr" = "true" ] || { echo "FATAL: this node is not a swarm MANAGER. Run the job on VPS-4."; exit 1; }
-          docker node ls >/dev/null || { echo "FATAL: manager unreachable / no quorum. 2-manager cluster (VPS-3 + VPS-4) — check both."; exit 1; }
+          docker node ls >/dev/null 2>&1 || { echo "FATAL: manager unreachable / no quorum. 2 managers (this host + the Leader) — check both. DEPLOY=false still builds and pushes."; exit 1; }
+
+          # Reported for the record only — never fatal. See above.
+          state=$(docker info --format '{{.Swarm.LocalNodeState}}')
+          [ "$state" = "active" ] || echo "WARNING: LocalNodeState=$state, but the control plane answers — continuing. Stale flag; clears only on a dockerd restart, which stops every container on this host (live-restore is off)."
 
           docker service inspect "${SERVICE}" >/dev/null 2>&1 \
             || { echo "FATAL: service ${SERVICE} does not exist. This job updates an existing service; it does not create one."; exit 1; }
@@ -214,7 +244,14 @@ pipeline {
           }
         }
         archiveArtifacts artifacts: "${SERVICE}.pre-${TAG}.json", allowEmptyArchive: true
+      }
+    }
 
+    // Ungated: the push happens on every build, DEPLOY or not, so the login has
+    // to be proved on every build — and still BEFORE the ~15 min build, not after.
+    stage('Preflight: registry login') {
+      steps {
+        script { env.STEP = 'Preflight: registry login' }
         // Authenticate NOW, not after the build. A stale managed file or an
         // untrusted CA is a live failure mode and currently only surfaces at push.
         configFileProvider([configFile(fileId: 'registry-creds', variable: 'REG_FILE')]) {

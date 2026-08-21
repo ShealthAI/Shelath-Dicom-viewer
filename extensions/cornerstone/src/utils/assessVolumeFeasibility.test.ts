@@ -60,13 +60,31 @@ describe('assessVolumeFeasibility', () => {
 
   describe('the soft memory budget', () => {
     it('blocks a series that fits the texture cap but not this GPU memory', () => {
+      // 1700 slices at 512² half-float is ~891 MB, over the low tier's 768 MB,
+      // while staying under the 2048-per-axis texture cap - so this exercises the
+      // MEMORY branch specifically, not the capability wall.
+      //
+      // This used to be 1200. The low budget was raised from 256 MB, which was
+      // smaller than any real CT and refused every clinical series; 1200 now
+      // legitimately fits, so the boundary case had to move with it.
       onDevice('low');
-      const result = assessVolumeFeasibility(displaySet(), ids(1200));
+      const result = assessVolumeFeasibility(displaySet(), ids(1700));
 
       expect(result.verdict).toBe('exceeds-memory');
       expect(result.feasible).toBe(false);
-      expect(result.userMessage).toMatch(/1200 images/);
+      expect(result.userMessage).toMatch(/1700 images/);
       expect(result.userMessage).toMatch(/full resolution/);
+    });
+
+    it('allows an ordinary clinical CT on the weakest device', () => {
+      // The regression that motivated raising the budget: a 500-slice 512² study
+      // is 262 MB, and at the old 256 MB ceiling the low tier refused it - and
+      // therefore refused essentially every real CT.
+      onDevice('low');
+      const result = assessVolumeFeasibility(displaySet(), ids(500));
+
+      expect(result.feasible).toBe(true);
+      expect(result.verdict).toBe('ok');
     });
 
     it('allows the same series on a workstation', () => {

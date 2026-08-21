@@ -1,8 +1,11 @@
 import {
+  MAX_NET_CONCURRENCY,
+  MIN_NET_CONCURRENCY,
+  RETRIEVAL_CONCURRENCY,
+  resolveRetrievalConcurrency,
   getRenderingProfile,
   resolveWebWorkerCount,
   estimateVolumeBytes,
-  requiredSliceStride,
 } from './renderingProfile';
 
 describe('renderingProfile', () => {
@@ -67,41 +70,88 @@ describe('renderingProfile', () => {
   });
 
   describe('estimateVolumeBytes', () => {
-    it('counts one byte-per-voxel-per-dimension at full precision', () => {
-      expect(estimateVolumeBytes([512, 512, 100], 2, false)).toBe(512 * 512 * 100 * 2);
+    // These model the TEXTURE, not the source file. Cornerstone uploads volumes
+    // as float32, or half-float when preferSizeOverAccuracy is set. A 16-bit
+    // source does not produce a 16-bit texture, and assuming it did is what made
+    // the full-precision estimate half of the truth.
+
+    it('counts float32 at full precision', () => {
+      expect(estimateVolumeBytes([512, 512, 100], 2, false)).toBe(512 * 512 * 100 * 4);
+    });
+
+    it('counts half-float when preferSizeOverAccuracy is on', () => {
+      expect(estimateVolumeBytes([512, 512, 100], 2, true)).toBe(512 * 512 * 100 * 2);
     });
 
     it('halves the estimate when half-float storage is on', () => {
-      const full = estimateVolumeBytes([512, 512, 100], 4, false);
-      const half = estimateVolumeBytes([512, 512, 100], 4, true);
+      const full = estimateVolumeBytes([512, 512, 100], 2, false);
+      const half = estimateVolumeBytes([512, 512, 100], 2, true);
       expect(half).toBe(full / 2);
     });
 
-    it('never assumes below 2 bytes per voxel', () => {
-      // Half of an 8-bit source would be 0.5 bytes, which is not a real texture
-      // format — clamping keeps the estimate an honest lower bound.
-      expect(estimateVolumeBytes([10, 10, 10], 1, true)).toBe(10 * 10 * 10 * 2);
+    it('does not vary with the source bit depth', () => {
+      // The texture format is fixed by the renderer. An 8-bit and a 16-bit
+      // source of the same dimensions occupy the same volume texture, so a
+      // budget check must not treat them differently.
+      const eight = estimateVolumeBytes([64, 64, 64], 1, false);
+      const sixteen = estimateVolumeBytes([64, 64, 64], 2, false);
+      expect(eight).toBe(sixteen);
+    });
+
+    it('is a lower bound — drivers pad and align', () => {
+      // Documented expectation rather than a guard: callers must keep headroom
+      // rather than treating this as exact.
+      expect(estimateVolumeBytes([10, 10, 10], 2, true)).toBe(10 * 10 * 10 * 2);
     });
   });
 
-  describe('requiredSliceStride', () => {
-    it('returns 1 when the volume already fits', () => {
-      expect(requiredSliceStride(100, 200)).toBe(1);
+  describe('resolveRetrievalConcurrency', () => {
+    // This governs the NETWORK pool, which until now was never configured and
+    // sat at Cornerstone's default of 5 prefetch requests on every machine —
+    // while the decode pool was carefully tuned per GPU tier. The tuning that
+    // existed could not affect link saturation even in principle.
+
+    it('defaults to the shared value, not a per-tier one', () => {
+      // GPU class says nothing about the link. A workstation on a 5 Mbps clinic
+      // line and a laptop on gigabit must not be assigned network concurrency by
+      // their graphics card.
+      expect(resolveRetrievalConcurrency('')).toEqual(RETRIEVAL_CONCURRENCY);
     });
 
-    it('scales LINEARLY — dropping slices divides bytes by exactly the stride', () => {
-      // The bug this guards: a cube-root factor would return 2 here, leave the
-      // volume 4x too big for the GPU, and the context loss would return.
-      expect(requiredSliceStride(800, 100)).toBe(8);
-      expect(requiredSliceStride(300, 100)).toBe(3);
+    it('is well above the decode pool — retrieval slots free on bytes, not on decode', () => {
+      expect(RETRIEVAL_CONCURRENCY.prefetch).toBeGreaterThan(
+        getRenderingProfile('low').maxNumRequests.prefetch
+      );
     });
 
-    it('caps at 8 — past that the caller should refuse rather than pretend', () => {
-      expect(requiredSliceStride(1e12, 1)).toBe(8);
+    it('honours ?netConcurrency= so a link can be measured without a rebuild', () => {
+      const result = resolveRetrievalConcurrency('?netConcurrency=32');
+      expect(result.prefetch).toBe(32);
+      expect(result.interaction).toBe(32);
     });
 
-    it('treats a non-positive budget as "no information"', () => {
-      expect(requiredSliceStride(1000, 0)).toBe(1);
+    it('clamps an absurd override rather than trusting it', () => {
+      expect(resolveRetrievalConcurrency('?netConcurrency=9999').prefetch).toBe(
+        MAX_NET_CONCURRENCY
+      );
+      expect(resolveRetrievalConcurrency('?netConcurrency=0').prefetch).toBe(
+        MIN_NET_CONCURRENCY
+      );
+      expect(resolveRetrievalConcurrency('?netConcurrency=-5').prefetch).toBe(
+        MIN_NET_CONCURRENCY
+      );
+    });
+
+    it('ignores a non-numeric override', () => {
+      expect(resolveRetrievalConcurrency('?netConcurrency=lots')).toEqual(RETRIEVAL_CONCURRENCY);
+    });
+
+    it('keeps thumbnails below the main pool', () => {
+      // Thumbnails are the least urgent traffic; letting them match prefetch
+      // would have a panel of previews competing with the frame being read.
+      const result = resolveRetrievalConcurrency('?netConcurrency=20');
+      expect(result.thumbnail).toBeLessThan(result.prefetch);
+      expect(result.thumbnail).toBeGreaterThanOrEqual(MIN_NET_CONCURRENCY);
     });
   });
 });

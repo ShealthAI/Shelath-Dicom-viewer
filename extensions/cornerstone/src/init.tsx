@@ -10,6 +10,7 @@ import {
   metaData,
   volumeLoader,
   imageLoadPoolManager,
+  imageRetrievalPoolManager,
   getEnabledElement,
   Settings,
   utilities as csUtilities,
@@ -37,7 +38,11 @@ import interleaveCenterLoader from './utils/interleaveCenterLoader';
 import nthLoader from './utils/nthLoader';
 import interleaveTopToBottom from './utils/interleaveTopToBottom';
 import { getGpuInfo } from './utils/getGpuTier';
-import { getRenderingProfile, resolveWebWorkerCount } from './utils/renderingProfile';
+import {
+  getRenderingProfile,
+  resolveRetrievalConcurrency,
+  resolveWebWorkerCount,
+} from './utils/renderingProfile';
 import initWebGLContextLossRecovery from './utils/initWebGLContextLossRecovery';
 import initContextMenu from './initContextMenu';
 import initDoubleClick from './initDoubleClick';
@@ -49,6 +54,7 @@ import { usePositionPresentationStore } from './stores/usePositionPresentationSt
 import { useSegmentationPresentationStore } from './stores/useSegmentationPresentationStore';
 import { imageRetrieveMetadataProvider } from '@cornerstonejs/core/utilities';
 import { initializeWebWorkerProgressHandler } from './utils/initWebWorkerProgressHandler';
+import { installLoadTelemetry } from './utils/loadTelemetry';
 
 const { registerColormap } = csUtilities.colormap;
 
@@ -118,6 +124,11 @@ export default async function init({
       useGenericViewport: Boolean(appConfig.useGenericViewport),
     },
   });
+
+  // Capture the load timings OHIF already computes but only prints. Installed
+  // early so nothing that happens during startup is missed - scriptToView in
+  // particular ends shortly after this point.
+  installLoadTelemetry();
 
   // Turn a permanent black viewport into a self-heal. Must be attached before
   // viewports render: `webglcontextlost` has to be preventDefault()-ed or the
@@ -294,15 +305,50 @@ export default async function init({
   // Now it scales with the device class (a 2-core laptop cannot decode 25
   // parallel frames anyway — it just queues them and stutters the UI), and an
   // explicit app-config value still wins so ops can pin it per site.
+  // One typed read of the app-config overrides, shared by both pools.
+  //
+  // `appConfig` is untyped here, so reaching into it inline meant repeating an
+  // unchecked property access eight times. Narrowing once keeps the override
+  // behaviour identical and stops the pattern spreading further.
+  const configuredRequests = (appConfig as {
+    maxNumRequests?: Partial<Record<'interaction' | 'thumbnail' | 'prefetch' | 'compute', number>>;
+  } | undefined)?.maxNumRequests;
+
+  // DECODE pool — bounded by CPU. A 2-core laptop cannot decode 25 frames in
+  // parallel; it queues them and stutters the UI. Device class is the right axis
+  // for this one.
   imageLoadPoolManager.maxNumRequests = {
     [RequestTypes.Interaction]:
-      appConfig?.maxNumRequests?.interaction || renderingProfile.maxNumRequests.interaction,
+      configuredRequests?.interaction || renderingProfile.maxNumRequests.interaction,
     [RequestTypes.Thumbnail]:
-      appConfig?.maxNumRequests?.thumbnail || renderingProfile.maxNumRequests.thumbnail,
+      configuredRequests?.thumbnail || renderingProfile.maxNumRequests.thumbnail,
     [RequestTypes.Prefetch]:
-      appConfig?.maxNumRequests?.prefetch || renderingProfile.maxNumRequests.prefetch,
+      configuredRequests?.prefetch || renderingProfile.maxNumRequests.prefetch,
     [RequestTypes.Compute]:
-      appConfig?.maxNumRequests?.compute || renderingProfile.maxNumRequests.compute,
+      configuredRequests?.compute || renderingProfile.maxNumRequests.compute,
+  };
+
+  // NETWORK pool — bounded by the link, and until now never configured at all.
+  //
+  // These are two different pools with two different limits, and only this one
+  // governs how much of the connection is in use. It was left at Cornerstone's
+  // default of 5 prefetch requests on every machine, while the decode pool above
+  // was carefully tuned per GPU tier - so the tuning that existed could not
+  // affect link saturation even in principle.
+  //
+  // A retrieval slot frees the moment bytes arrive, independent of the decode
+  // backlog, which is exactly why this can be set well above the decode limit
+  // without starving a weak CPU.
+  const retrievalConcurrency = resolveRetrievalConcurrency();
+  imageRetrievalPoolManager.maxNumRequests = {
+    [RequestTypes.Interaction]:
+      configuredRequests?.interaction || retrievalConcurrency.interaction,
+    [RequestTypes.Thumbnail]:
+      configuredRequests?.thumbnail || retrievalConcurrency.thumbnail,
+    [RequestTypes.Prefetch]:
+      configuredRequests?.prefetch || retrievalConcurrency.prefetch,
+    [RequestTypes.Compute]:
+      configuredRequests?.compute || retrievalConcurrency.compute,
   };
 
   // Decode workers. `initWADOImageLoader` clamps to cores-1 already; this makes

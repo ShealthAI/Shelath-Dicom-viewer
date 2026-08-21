@@ -294,8 +294,19 @@ window.config = {
   whiteLabeling: {
     createLogoComponentFn: function (React) {
       var WORDMARK_STYLE_ID = 'shealth-wordmark-style';
-      var css =
-        '@media (max-width: 1100px) { .shealth-wordmark__product { display: none; } }';
+
+      // Below 1100px the product name drops and the MARK is kept. At that width
+      // every pixel the header holds is one the toolbar loses, and a logo stays
+      // recognisable alone where a word does not.
+      //
+      // There is deliberately no "Shealth" text beside the mark: the logo
+      // already says it, and printing the company name twice next to itself is
+      // noise in a header competing with the toolbar for room.
+      var css = [
+        '@media (max-width: 1100px) {',
+        '  .shealth-wordmark__product { display: none; }',
+        '}',
+      ].join(' ');
 
       return React.createElement(
         'a',
@@ -303,11 +314,9 @@ window.config = {
           href: '/',
           style: {
             display: 'flex',
-            alignItems: 'baseline',
-            gap: '5px',
+            alignItems: 'center',
+            gap: '9px',
             textDecoration: 'none',
-            // Breathing room on both sides so the wordmark never touches the
-            // header edge or crowds the toolbar next to it.
             padding: '0 14px 0 12px',
             height: '100%',
             alignSelf: 'center',
@@ -317,24 +326,28 @@ window.config = {
           },
           'aria-label': 'Shealth Smart Care Viewer',
         },
-        // Scoped stylesheet, keyed by id so React reuses this one node instead
-        // of appending another copy on every render.
         React.createElement('style', { key: WORDMARK_STYLE_ID }, css),
-        React.createElement(
-          'span',
-          {
-            style: {
-              // Near-white rather than pure white: #F0F0F0 is the palette's
-              // foreground and is easier to read for hours against near-black.
-              color: '#F0F0F0',
-              fontSize: '15px',
-              fontWeight: 700,
-              letterSpacing: '0.2px',
-              lineHeight: 1,
-            },
+        React.createElement('img', {
+          src: './logos.png',
+          // Empty alt, not "Shealth": the anchor already carries the accessible
+          // name. Repeating it here makes a screen reader announce the product
+          // twice.
+          alt: '',
+          style: {
+            // 22px inside the 48px bar. Height-only sizing keeps the source
+            // aspect ratio, so the mark cannot be stretched by a future asset
+            // swap.
+            height: '22px',
+            width: 'auto',
+            objectFit: 'contain',
+            display: 'block',
+            flexShrink: 0,
+            // The mark is dark-on-transparent and this chrome is near-black, so
+            // it is knocked to white - the same treatment the main app's sidebar
+            // applies, so one asset serves both surfaces.
+            filter: 'brightness(0) invert(1)',
           },
-          'Shealth'
-        ),
+        }),
         React.createElement(
           'span',
           {

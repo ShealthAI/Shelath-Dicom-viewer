@@ -89,23 +89,42 @@ describe('getGpuTier', () => {
     });
   });
 
-  describe('host constraints override the GPU', () => {
-    it('demotes to low on a 4 GB machine even with a good GPU', () => {
+  describe('host constraints temper the GPU, but no longer override it', () => {
+    // navigator.deviceMemory is quantised to powers of two and CAPPED AT 8 by
+    // spec. Treating it as decisive is what made these rules wrong: a 32 GB
+    // workstation reports 8, and plenty of 8 GB laptops report 4. The GPU is now
+    // inspected first, and memory only tempers the result.
+
+    it('does not send a discrete GPU to low just because the host reports 4 GB', () => {
+      // A GTX 1650 has its own VRAM. 'low' is the tier whose 256 MB budget
+      // cannot reconstruct any real CT, so sending real hardware there on the
+      // strength of an unreliable reading is the failure this guards.
       mockWebGL('NVIDIA GeForce GTX 1650');
       setHost({ memory: 4, cores: 8 });
-      expect(getGpuTier()).toBe('low');
+      expect(getGpuTier()).toBe('mid');
     });
 
-    it('demotes to low on a dual-core machine', () => {
+    it('caps a strong GPU at mid on a dual-core host', () => {
+      // Not because the card cannot render - because the tier also sets fetch
+      // concurrency, and 'high' asks for 40 parallel image requests. Two cores
+      // cannot decode what that fetches.
       mockWebGL('NVIDIA GeForce RTX 4070');
       setHost({ memory: 32, cores: 2 });
-      expect(getGpuTier()).toBe('low');
+      expect(getGpuTier()).toBe('mid');
     });
 
-    it('caps a strong GPU on an 8 GB host at mid', () => {
+    it('allows high on an 8 GB host with a strong GPU', () => {
+      // 8 is the ceiling deviceMemory can report, so the old rule of demoting at
+      // <= 8 made 'high' unreachable for every machine that reports at all.
       mockWebGL('NVIDIA GeForce RTX 4070');
       setHost({ memory: 8, cores: 8 });
-      expect(getGpuTier()).toBe('mid');
+      expect(getGpuTier()).toBe('high');
+    });
+
+    it('still sends a genuinely tiny host to low', () => {
+      mockWebGL('some unrecognised adapter');
+      setHost({ memory: 2, cores: 8 });
+      expect(getGpuTier()).toBe('low');
     });
   });
 

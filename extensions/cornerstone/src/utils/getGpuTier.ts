@@ -153,6 +153,13 @@ function classify(
     if (deviceMemory !== null && deviceMemory <= 4) {
       return { tier: 'mid', reason: `strong GPU but only ${deviceMemory}GB RAM: ${renderer}` };
     }
+    // Nor is it 'high' on two cores. The tier does not only pick a GPU budget -
+    // it also sets fetch concurrency, and 'high' asks for 40 parallel image
+    // requests. On a dual-core host that starves the decode workers the frames
+    // are being fetched FOR, however capable the card is.
+    if (cores <= 2) {
+      return { tier: 'mid', reason: `strong GPU on ${cores} cores: ${renderer}` };
+    }
     return { tier: 'high', reason: `discrete/high-end GPU: ${renderer}` };
   }
 

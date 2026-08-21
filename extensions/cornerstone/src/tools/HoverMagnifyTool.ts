@@ -331,12 +331,32 @@ class HoverMagnifyTool extends MagnifyTool {
       this._deactivateDraw?.(element as HTMLDivElement);
 
       this._isShowing = true;
-      this._moveTo(element, enabledElement, evt.detail.currentPoints);
+
+      // DELIBERATELY NOT calling _moveTo here.
+      //
+      // _createMagnificationViewport positions the camera inside
+      // `setStack(...).then(...)`, and it derives the camera DISTANCE by reading
+      // the viewport's current camera at that moment. Writing a camera before
+      // that promise resolves means writing into a viewport with no stack - and
+      // upstream then reads our value back and preserves it for the life of the
+      // loupe.
+      //
+      // That is what produced a correctly sized, correctly positioned, solid
+      // black loupe: whatever distance we wrote first became permanent, and the
+      // image sat outside the resulting clipping range. It was not the value we
+      // chose that was wrong so much as the timing of writing one at all.
+      //
+      // Upstream positions the first frame from the pointer location it was
+      // given, which is exactly where it should be. Tracking takes over on the
+      // next pointer move, by which time the stack has resolved and the camera
+      // is real.
     } catch (error) {
       // A non-stack viewport (e.g. a volume/MPR pane) throws by design in
       // MagnifyTool. Failing quietly is correct: the radiologist simply gets no
       // loupe there rather than an error dialog mid-read.
       this._isShowing = false;
+      // A throw part-way through creation can leave the loupe div behind.
+      this._removeOrphanedLoupes();
     }
   }
 
@@ -367,7 +387,27 @@ class HoverMagnifyTool extends MagnifyTool {
     const world = currentPoints.world;
     const camera = magnifyViewport.getCamera();
     const normal = camera.viewPlaneNormal ?? [0, 0, 1];
-    const distance = 100;
+
+    // Camera distance is READ from the viewport, never invented.
+    //
+    // This line used to be `const distance = 100`, which produced a loupe that
+    // was correctly sized and positioned and rendered solid black. A camera
+    // distance is in patient millimetres and the viewport's clipping range is
+    // derived from the distance it was set up with; dropping the camera to an
+    // arbitrary 100 mm put the image outside that range, so there was nothing
+    // left in front of the camera to draw.
+    //
+    // Upstream never invents it either - both _createMagnificationViewport and
+    // _dragCallback preserve the existing focalPoint→position vector. This does
+    // the same, and only moves where that vector points.
+    const focal = camera.focalPoint ?? [0, 0, 0];
+    const position = camera.position ?? [0, 0, 0];
+    const distance =
+      Math.hypot(
+        focal[0] - position[0],
+        focal[1] - position[1],
+        focal[2] - position[2]
+      ) || 1;
 
     // Re-derive the zoom on every move instead of taking whatever was set when
     // the loupe was created. Two things depend on this:
@@ -422,6 +462,11 @@ class HoverMagnifyTool extends MagnifyTool {
 
   private _hide(): void {
     if (!this._isShowing) {
+      // Still sweep. _isShowing goes false on its own whenever _moveTo finds no
+      // loupe element, so "we think nothing is open" is exactly the state in
+      // which an orphan can already be sitting on the images. Returning early
+      // here left it there until the next full teardown.
+      this._removeOrphanedLoupes();
       return;
     }
     this._isShowing = false;

@@ -55,6 +55,7 @@ import { useSegmentationPresentationStore } from './stores/useSegmentationPresen
 import { imageRetrieveMetadataProvider } from '@cornerstonejs/core/utilities';
 import { initializeWebWorkerProgressHandler } from './utils/initWebWorkerProgressHandler';
 import { installLoadTelemetry } from './utils/loadTelemetry';
+import { installShealthBridge } from './utils/shealthBridge';
 
 const { registerColormap } = csUtilities.colormap;
 
@@ -129,6 +130,25 @@ export default async function init({
   // early so nothing that happens during startup is missed - scriptToView in
   // particular ends shortly after this point.
   installLoadTelemetry();
+
+  // Answer the SHealth workspace's capture / render-check requests.
+  //
+  // The host has always sent these; nothing here listened, so Capture timed out
+  // after 8s ("The viewer didn't respond") and the render watchdog eventually
+  // claimed a fully-painted study was still rendering. Installed here, beside
+  // the telemetry hook, because both halves of that protocol belong together and
+  // this runs once per viewer boot with `servicesManager` already in hand.
+  //
+  // The bridge resolves the viewport lazily on each request, so installing
+  // before any viewport exists is correct: early requests are answered
+  // "not rendered" rather than dropped.
+  installShealthBridge({
+    servicesManager,
+    // Optional allowlist. Unset by default: the viewer serves several SHealth
+    // hosts (prod, test, local) and the bridge then requires messages to come
+    // from its actual embedder instead.
+    allowedOrigins: appConfig?.shealthHostOrigins,
+  });
 
   // Turn a permanent black viewport into a self-heal. Must be attached before
   // viewports render: `webglcontextlost` has to be preventDefault()-ed or the

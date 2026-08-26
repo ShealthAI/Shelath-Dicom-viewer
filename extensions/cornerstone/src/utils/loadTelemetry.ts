@@ -33,7 +33,12 @@
  * viewer is opened standalone there is no parent, and nothing happens.
  */
 
-/** Message type the host listens for. Namespaced so it cannot collide. */
+/**
+ * Message type the host listens for. Namespaced so it cannot collide.
+ *
+ * The receive half of this protocol - the host's capture and render-check
+ * requests - lives in `shealthBridge.ts`.
+ */
 export const TELEMETRY_MESSAGE_TYPE = 'shealth:viewer-timing';
 
 export interface LoadTiming {

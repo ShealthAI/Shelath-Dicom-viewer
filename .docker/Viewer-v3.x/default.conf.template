@@ -14,6 +14,38 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
   }
+  # ── The entry document must never be served stale ───────────────────────────
+  #
+  # Everything webpack emits is content-hashed (app.bundle.<hash>.js), so those
+  # files are safe to cache for as long as a browser likes: a changed file gets a
+  # changed name. index.html is the one file whose NAME never changes, and it is
+  # what maps those hashes to the current build. app-config.js is the same shape:
+  # a fixed name, rewritten by entrypoint.sh at container start.
+  #
+  # Neither carried a Cache-Control header, which does not mean "do not cache" -
+  # it means the browser applies heuristic freshness and may reuse the response
+  # without asking. The failure that produces is nasty precisely because the
+  # server looks correct: a rebuilt, redeployed viewer serves the new bundles to
+  # anyone who asks, while an already-open workspace keeps loading the old index
+  # and therefore the old bundle hashes, indefinitely. A fix is "deployed" and
+  # the radiologist still sees the bug. That is how the capture bridge appeared
+  # to have shipped without working.
+  #
+  # `no-cache` does not disable caching - it requires revalidation. With the ETag
+  # nginx already sends, an unchanged index costs a 304 and no body.
+  location = ${PUBLIC_URL}index.html {
+    root   /usr/share/nginx/html;
+    # Repeated deliberately: add_header does not inherit into a location that
+    # defines its own, so omitting this here would silently drop the header.
+    add_header Cross-Origin-Resource-Policy same-origin;
+    add_header Cache-Control "no-cache";
+  }
+  location = ${PUBLIC_URL}app-config.js {
+    root   /usr/share/nginx/html;
+    add_header Cross-Origin-Resource-Policy same-origin;
+    add_header Cache-Control "no-cache";
+  }
+
   error_page   500 502 503 504  /50x.html;
   location = /50x.html {
     root   /usr/share/nginx/html;

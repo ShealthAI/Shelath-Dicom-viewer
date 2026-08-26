@@ -276,6 +276,16 @@ declare global {
         maxNumPrefetchRequests: number;
         order: 'closest' | 'downward' | 'upward';
       };
+      /**
+       * Origins allowed to drive the SHealth bridge (`shealth:capture-request`,
+       * `shealth:render-check`) when this viewer is embedded in the SHealth
+       * workspace. See `extensions/cornerstone/src/utils/shealthBridge.ts`.
+       *
+       * Leave unset unless the deployment has exactly one host: the bridge then
+       * requires requests to come from the frame that actually embedded it,
+       * which holds across prod / test / local without a per-environment list.
+       */
+      shealthHostOrigins?: string[];
     }
 
     export interface Test {

@@ -451,11 +451,33 @@ export default async function init({
 
   /**
    * Runs error handler for failed requests.
-   * @param event
+   *
+   * `getHTTPErrorHandler()` returns undefined unless the app registered one,
+   * and nothing in this build does. Calling it unguarded threw
+   *
+   *   TypeError: handler is not a function
+   *
+   * from inside a cornerstone event listener EVERY time a frame failed to
+   * load. That aborts the listener chain, so the retry/report path that should
+   * have run for the failed image never did — a single transient 502 on one
+   * frame of a 400-slice series was enough to leave the viewport empty.
+   *
+   * The failure must be visible either way: with no handler registered the
+   * error was previously swallowed by the TypeError it caused, so log it.
    */
   const imageLoadFailedHandler = ({ detail }) => {
     const handler = errorHandler.getHTTPErrorHandler();
-    handler(detail.error);
+    if (typeof handler === 'function') {
+      try {
+        handler(detail?.error);
+      } catch (e) {
+        // A throwing app-supplied handler must not take out the listener chain
+        // either — same failure mode, different origin.
+        console.error('[shealth] HTTP error handler threw', e);
+      }
+      return;
+    }
+    console.error('[shealth] image load failed', detail?.error ?? detail);
   };
 
   eventTarget.addEventListener(EVENTS.IMAGE_LOAD_FAILED, imageLoadFailedHandler);
